@@ -1,0 +1,545 @@
+# ==============================================================================
+# HAUPTKONFIGURATION (config.yaml) - KURZANLEITUNG
+# ==============================================================================
+#
+# Dieses Dokument steuert das gesamte Verhalten der P&ID Analyse Suite.
+# WICHTIG: Die Einrückung (Leerzeichen) ist in YAML entscheidend und definiert die Struktur!
+#
+# --- AUFBAU & ZUSAMMENSPIEL ---
+#
+# 1. paths: Definiert alle Dateipfade, die das Programm intern nutzt.
+#
+# 2. models: Definiert, WELCHE KI-Modelle ("Mitarbeiter") prinzipiell verfügbar sind.
+#
+# 3. strategies: Definiert, WIE die Mitarbeiter zu Teams ("Projektpläne") für eine
+#    komplette Analyse zusammengestellt werden. Jeder Modellname hier MUSS exakt
+#    so in der 'models'-Sektion existieren. Dies sind die STRATEGIEN für den CLI-Runner.
+#
+# 4. training_camp: Gibt dem Trainings-Orchestrator seine Anweisungen. Der Unterpunkt
+#    'strategies_and_models' ist die To-Do-Liste und referenziert die NAMEN aus
+#    der 'strategies'-Sektion. Dieser Block kommt DIREKT UNTER 'strategies'.
+#
+# 5. logic_parameters: Die "Stellschrauben" der KI. Hier werden alle Schwellenwerte,
+#    Zähler und technischen Parameter gesteuert. Der Unterpunkt 'cgm_main_components'
+#    definiert, welche Komponenten als "Hauptkomponenten" für die Abstraktion dienen.
+#
+# 6. prompts: Die exakten Arbeitsanweisungen (Prompts) für die KI-Agenten. Diese
+#    kommen ganz am Ende der Datei.
+# 
+# 7. Einrückungsbeispiel
+#paths:
+  # ... Ihre Pfade ...
+#models:
+  # ... Ihre Modelle ...
+#strategies:
+  # ... Ihre Strategien ...
+#training_camp:
+  # ... Ihr Trainingslager ...
+#logic_parameters:
+  # ... Ihre Logik-Parameter ...
+  #cgm_main_components:
+    # ... Ihre CGM Hauptkomponenten ...
+#prompts:
+# ==============================================================================
+
+# Pfade zu den Konfigurationsdateien und -verzeichnissen
+paths:
+  element_type_list: "element_type_list.json"
+  learning_db: "learning_db.json"
+  temp_symbol_dir: "temp_symbols_for_embeddings"
+  # NEU: Verzeichnis für den LLM-Disk-Cache. Wird relativ zum Projekt-Root interpretiert.
+  llm_cache_dir: ".pni_analyzer_cache"
+  learned_symbols_images_dir: "learned_symbols_images"
+
+# Definition aller verfügbaren Modelle, die von der GUI und dem CLI genutzt werden
+models:
+  "Google Gemini 2.5 Pro":
+    id: "gemini-2.5-pro"
+    access_method: "gemini"
+    location: "us-central1"
+    description: "Googles Top-Modell für höchste Genauigkeit bei komplexen Diagrammen."
+    generation_config:
+      temperature: 0
+      top_p: 0.95
+      top_k: 40
+      max_output_tokens: 65530
+  "Google Gemini 2.5 Flash":
+    id: "gemini-2.5-flash"
+    access_method: "gemini"
+    location: "us-central1"
+    description: "Guter Kompromiss aus Geschwindigkeit und Qualität für Standardanalysen."
+    generation_config:
+      temperature: 0
+      top_p: 0.95
+      top_k: 40
+      max_output_tokens: 65530
+  "Google Gemini 2.0 Flash":
+    id: "gemini-2.0-flash"
+    access_method: "gemini"
+    location: "us-central1"
+    description: "Ein schnelles und kostengünstiges Modell der 2.0-Generation."
+    generation_config:
+      temperature: 0
+      top_p: 0.95
+      top_k: 40
+      max_output_tokens: 8192
+  "Google Gemini 2.0 Flash-Lite":
+    id: "gemini-2.0-flash-lite"
+    access_method: "gemini"
+    location: "us-central1"
+    description: "Kosteneffizientes Modell mit großem Kontextfenster."
+    generation_config:
+      temperature: 0
+      top_p: 0.95
+      top_k: 40
+      max_output_tokens: 8192
+  "Google Gemini 2.5 Flash-Lite (Preview)":
+    id: "gemini-2.5-flash-lite-preview-06-17"
+    access_method: "gemini"
+    location: "us-central1"
+    description: "Neuestes, extrem schnelles Preview-Modell, ideal für schnelle Iterationen."
+    generation_config:
+      temperature: 0
+      top_p: 0.95
+      top_k: 40
+      max_output_tokens: 65530
+  "Google Gemini 1.5 Flash":
+    id: "gemini-1.5-flash"
+    access_method: "gemini"
+    location: "us-central1"
+    description: "Schnelles und kosteneffizientes Gemini-Modell."
+    generation_config:
+      temperature: 0.1
+      top_p: 0.95
+      top_k: 40
+      max_output_tokens: 8192
+  "Google Gemini 1.5 Pro":
+    id: "gemini-1.5-pro"
+    access_method: "gemini"
+    location: "us-central1"
+    description: "Leistungsstarkes Gemini-Modell für komplexe Aufgaben."
+    generation_config:
+      temperature: 0.1
+      top_p: 0.95
+      top_k: 40
+      max_output_tokens: 8192
+  "MultiModal Embedding (Image)":
+      # Dies ist das dedizierte MultiModal Embedding Model von Vertex AI.
+      # Es hat KEINE "generation_config" im klassischen Sinne, da es Embeddings und nicht Text generiert.
+      id: "multimodalembedding@001" # Dies ist die korrekte ID für direkte Bild-Embeddings
+      access_method: "vertex_ai_multimodal_embedding" # Expliziter Access Method für dieses Modell
+      location: "us-central1" # Standort für das Embedding-Modell
+      description: "Vertex AI's dediziertes MultiModal Embedding Model für direkte Bild-Embeddings."
+
+  # Definition verschiedener Analyse-Strategien für den CLI-Runner (Möglichkeit für Mischstrategien mit verschiedenen Modellen)
+strategies:
+  default_flash:
+    meta_model: "Google Gemini 2.5 Flash"
+    detail_model: "Google Gemini 2.5 Flash"
+    polyline_model: "Google Gemini 2.5 Flash"
+
+logic_parameters:
+  # ----------------------------------------------------
+  # Globale Steuerung & Worker
+  # ----------------------------------------------------
+  # Maximale Anzahl der Korrektur-Iterationen in der Feedback-Schleife
+  max_self_correction_iterations: 3
+  # Score (0-100), bei dem die Korrekturschleife vorzeitig abbricht
+  target_quality_score: 98.0
+  # Maximale Anzahl paralleler Worker für die Analyse-Aufrufe (höher = schneller, aber mehr API-Last)
+  llm_executor_workers: 12
+
+  # ----------------------------------------------------
+  # LLM Handler / Caching / Timeouts
+  # ----------------------------------------------------
+  # Standard-Timeout für einen LLM-Aufruf in Sekunden (höher für starke Modelle wie Pro)
+  llm_default_timeout: 240
+  # Maximale Anzahl an Wiederholungsversuchen bei einem API-Fehler
+  llm_max_retries: 3
+  # Größe des Festplatten-Caches für LLM-Antworten in Gigabyte
+  llm_disk_cache_size_gb: 2
+  # Anzahl der Einträge im Memory-Cache (Level 1, LRU)
+  llm_memory_cache_size: 100
+
+  # ----------------------------------------------------
+  # Phase 2: Schwarm & Monolith Analyse
+  # ----------------------------------------------------
+  # Ziel-Anzahl der Kacheln für die adaptive Segmentierung des Schwarms
+  adaptive_target_tile_count: 50
+  # Harte Obergrenze für die Anzahl der zu analysierenden Kacheln
+  max_total_tiles: 80
+  # Batch-Größe für die parallele Verarbeitung der Kacheln (wie viele auf einmal in den ThreadPool)
+  analysis_batch_size: 5
+
+  # ----------------------------------------------------
+  # Phase 2: Fusion & Lückenschließung
+  # ----------------------------------------------------
+  # Schwellenwert für die Überlappung (IoU), um zwei Elemente als identisch zu betrachten
+  iou_match_threshold: 0.1
+  # Distanzschwelle (als Anteil der Bilddiagonale) für die prädiktive Lückenschließung
+  graph_completion_distance_threshold: 0.05
+
+  # ----------------------------------------------------
+  # Phase 4: Post-Processing & Filterung
+  # ----------------------------------------------------
+  # Confidence-Schwellenwert für Element- und Verbindungs-Filterung (0.0 - 1.0)
+  # Höher = weniger Halluzinationen, aber mehr verpasste Elemente
+  # Empfohlen: 0.85 für hohe Precision, 0.7 für Balance
+  confidence_threshold: 0.85
+
+  # ----------------------------------------------------
+  # Phase 4: CGM-Erstellung & Plots
+  # ----------------------------------------------------
+  # Liste der Typen, die im (optionalen) abstrahierten Graphen als Hauptkomponenten gelten
+  cgm_main_components:
+    - Boiler
+    - Pump
+    - Heat Exchanger
+    - Buffer Storage
+    - Thermal Consumer
+    - Line_Split
+    - Line_Merge
+    - Diagram_Inlet
+    - Diagram_Outlet
+  # Parameter für das Layout des finalen Graphen (höherer k-Wert = mehr Abstand)
+  cgm_plot_layout_k: 0.8
+  cgm_plot_layout_iterations: 75
+
+  # ----------------------------------------------------
+  # KPI / Interne Bewertung
+  # ----------------------------------------------------
+  kpi_subgraph_penalty: 25.0
+  kpi_isolated_penalty: 15.0
+  kpi_dangling_penalty: 5.0
+  kpi_unidentified_type_penalty: 2.0
+
+training_camp:
+  duration_hours: 3
+  # Optionale Pfade für Bilderverzeichnisse
+  image_paths:
+    simple: "Testbilder/Einfache P_I_Diagramme"
+    complex: "Testbilder/Komplexe P_I_Diagramme"
+    symbols: "pretraining_symbols" # Ordner für Symbolbilder im Vortraining
+
+  # Steuerung des Symbol-Vortrainings
+  perform_symbol_pretraining: False # Wenn True, wird das Symbol-Vortraining im ersten Zyklus durchgeführt
+  
+  # Maximale Anzahl von Trainingszyklen (zusätzlich zur Zeit)
+  max_cycles: 0 # 0 bedeutet unbegrenzt (nur Zeitlimit)
+
+  # NEU: Schwellenwerte für Phasenwechsel (Anzahl aufeinanderfolgender hoher Scores)
+  threshold_simple_to_complex: 3
+  threshold_complex_to_no_truth: 5
+
+  # Parameter-Kombinationen für Hyperparameter-Optimierung
+  parameter_combinations:
+    - {} # Basis-Parameter, keine Überschreibung
+    - min_quality_to_keep_bbox: 0.6
+    - visual_symbol_similarity_threshold: 0.80
+    - min_quality_to_keep_bbox: 0.4
+      visual_symbol_similarity_threshold: 0.90
+    # Füge hier weitere Kombinationen hinzu, die du testen möchtest
+    - llm_max_retries: 5 # Aggressivere Wiederholungsversuche bei LLM-Fehlern
+    - llm_default_timeout: 120 # Längeres Timeout für komplexe LLM-Aufgaben
+    - bbox_min_pixel_dim: 15 # Mindestgröße für BBoxes erhöhen (weniger kleine Fehler)
+    - bbox_aspect_ratio_range: [0.2, 5.0] # Strengere Aspektverhältnis-Regel
+    - graph_completion_distance_threshold: 0.03 # Kleinere Distanz für automatische Verbindung
+    - graph_completion_isolated_node_distance: 0.03 # Kleinere Distanz für "echt isoliert"
+    - min_quality_to_keep_bbox: 0.7 # Höhere Anforderung an BBox-Qualität
+    - visual_symbol_similarity_threshold: 0.85 # Strengere visuelle Ähnlichkeit
+    - llm_timeout_executor_workers: 4 # Weniger parallele LLM-Worker, wenn Stabilitätsprobleme auftreten
+    - analysis_batch_size: 2 # Kleinere Batch-Größe für LLM-Aufrufe
+    - precise_bbox_morph_kernel_size: 5 # Größerer Kernel für präzisere BBox-Extraktion
+    - precise_bbox_min_component_area: 50 # Größerer Mindestbereich für Konturen
+    - kpi_subgraph_penalty: 50.0 # Höhere Strafe für zerstückelte Graphen
+    - kpi_isolated_penalty: 30.0 # Höhere Strafe für isolierte Elemente
+
+  # Strategien und Modelle, die im Trainingslager getestet werden
+  strategies_and_models_to_test:
+  # Strategie 1: Der schnelle Allrounder
+  default_flash:
+    meta_model: "Google Gemini 2.5 Flash"
+    hotspot_model: "Google Gemini 2.5 Flash"
+    detail_model: "Google Gemini 2.5 Flash"
+    coarse_model: "Google Gemini 2.5 Flash"
+    correction_model: "Google Gemini 2.5 Flash"
+    code_gen_model: "Google Gemini 2.5 Flash"
+    critic_model_name: "Google Gemini 2.5 Flash"
+
+  # Strategie 2: Maximale Qualität, egal was es kostet
+  high_accuracy:
+    meta_model: "Google Gemini 2.5 Pro"
+    hotspot_model: "Google Gemini 2.5 Pro" # Angepasst zu Pro für volle High-Accuracy
+    detail_model: "Google Gemini 2.5 Pro"
+    coarse_model: "Google Gemini 2.5 Pro"
+    correction_model: "Google Gemini 2.5 Pro"
+    code_gen_model: "Google Gemini 2.5 Pro"
+    critic_model_name: "Google Gemini 2.5 Pro"
+
+  # Strategie 3: Der Chirurg - Pro-Modell nur für das Wesentliche
+  balanced_pro_detail:
+    meta_model: "Google Gemini 2.5 Flash"
+    hotspot_model: "Google Gemini 2.5 Flash"
+    detail_model: "Google Gemini 2.5 Pro"
+    coarse_model: "Google Gemini 2.5 Flash"
+    correction_model: "Google Gemini 2.5 Pro"
+    code_gen_model: "Google Gemini 2.5 Flash"
+    critic_model_name: "Google Gemini 2.5 Flash"
+
+  # Strategie 4: Der visuelle Spezialist - Flash für alles Visuelle
+  flash_vision_pro_logic:
+    meta_model: "Google Gemini 2.5 Flash"
+    hotspot_model: "Google Gemini 2.5 Flash"
+    detail_model: "Google Gemini 2.5 Flash"
+    coarse_model: "Google Gemini 2.5 Flash"
+    correction_model: "Google Gemini 2.5 Pro"
+    code_gen_model: "Google Gemini 2.5 Pro"
+    critic_model_name: "Google Gemini 2.5 Pro"
+
+  # Strategie 5: Nutzt nur ältere/günstigere Flash-Modelle (1.5)
+  low_cost_all_flash:
+    meta_model: "Google Gemini 1.5 Flash"
+    hotspot_model: "Google Gemini 1.5 Flash"
+    detail_model: "Google Gemini 1.5 Flash"
+    coarse_model: "Google Gemini 1.5 Flash"
+    correction_model: "Google Gemini 1.5 Flash"
+    code_gen_model: "Google Gemini 1.5 Flash"
+    critic_model_name: "Google Gemini 1.5 Flash"
+
+  # Strategie 6: Mischung aus 2.5 Flash für Geschwindigkeit und 2.5 Pro für Genauigkeit (Logik)
+  mixed_speed_accuracy:
+    meta_model: "Google Gemini 2.5 Flash"
+    hotspot_model: "Google Gemini 2.5 Flash"
+    detail_model: "Google Gemini 2.5 Flash"
+    coarse_model: "Google Gemini 2.5 Flash"
+    correction_model: "Google Gemini 2.5 Pro"
+    code_gen_model: "Google Gemini 2.5 Pro"
+    critic_model_name: "Google Gemini 2.5 Pro"
+
+  # Strategie 7: Pro für die Kern-Detektion, Rest Flash
+  pro_detection_flash_rest:
+    meta_model: "Google Gemini 2.5 Flash"
+    hotspot_model: "Google Gemini 2.5 Flash"
+    detail_model: "Google Gemini 2.5 Pro"
+    coarse_model: "Google Gemini 2.5 Flash"
+    correction_model: "Google Gemini 2.5 Flash"
+    code_gen_model: "Google Gemini 2.5 Flash"
+    critic_model_name: "Google Gemini 2.5 Flash"
+
+  # Strategie 8: Nur das 2.5 Flash-Modell für alles
+  minimalist_flash:
+    meta_model: "Google Gemini 2.5 Flash"
+    hotspot_model: "Google Gemini 2.5 Flash"
+    detail_model: "Google Gemini 2.5 Flash"
+    coarse_model: "Google Gemini 2.5 Flash"
+    correction_model: "Google Gemini 2.5 Flash"
+    code_gen_model: "Google Gemini 2.5 Flash"
+    critic_model_name: "Google Gemini 2.5 Flash"
+
+prompts:
+  general_system_prompt: "You are a high-precision, deterministic JSON-outputting analysis engine."
+
+  metadata_extraction_user_prompt: |
+    **TASK:** Extract P&ID METADATA from the TITLE BLOCK, which is enclosed by a black rectangle.
+    **OUTPUT:** A single, valid JSON object.
+    **STRATEGY:**
+    1.  **Locate Box:** Find the distinct black rectangle enclosing the title block. Its coordinates are `"metadata_bbox"`. Be extremely precise.
+    2.  **Extract Text Inside:** Analyze ONLY the content inside this box for `"project"`, `"title"`, `"version"`, and `"date"`.
+    **RULES:**
+    - If a value is not found, use an empty string ("").
+    - Provide ONLY the JSON object. NO additional text.
+    **EXAMPLE:**
+    ```json
+    {
+      "project": "ETA im Bestand", "title": "HNHT (Heating Network High Temperature)", "version": "1.0", "date": "17.05.2024",
+      "metadata_bbox": {"x": 0.8, "y": 0.9, "width": 0.15, "height": 0.08}
+    }
+    ```
+
+  legend_extraction_user_prompt: |
+    **TASK:** Extract ALL information from the LEGEND AREA, which is enclosed by a distinct black rectangle.
+    **OUTPUT:** A single, valid JSON object.
+    **STRATEGY:**
+    1.  **Locate Box:** Find the distinct black rectangle enclosing the legend. Its coordinates are `"legend_bbox"`. Be precise.
+    2.  **Analyze Content Inside:** Analyze ONLY the content within this box to extract the `"symbol_map"` and `"line_map"`.
+    **RULES:**
+    - Provide ONLY the JSON object. NO additional text.
+    - Colors: "red", "blue", etc. Styles: "solid", "dashed", "dotted".
+    **EXAMPLE:**
+    ```json
+    {
+      "symbol_map": { "Pump": "Pump", "Flow": "Flow Meter" },
+      "line_map": { "Return": { "color": "blue", "style": "solid" } },
+      "legend_bbox": {"x": 0.01, "y": 0.02, "width": 0.15, "height": 0.25}
+    }
+    ```
+
+  symbol_detection_user_prompt: |
+    **TASK:** Identify ALL graphical P&ID symbols and their associated text labels from the image.
+    **OUTPUT:** A single JSON object with ONE key: "symbols", containing a list of objects.
+    **RULES:**
+    - Each object MUST have `"label"` (the text, e.g., "3 Way Valve") and `"bbox"` (enclosing symbol AND text).
+    - Provide ONLY the JSON object.
+
+  raster_analysis_user_prompt_template: |-
+    **ROLE:** You are a P&ID analysis engine with high precision requirements.
+    **TASK:** Analyze the provided image segment and identify all components and their direct connections.
+    **CRITICAL ANTI-HALLUCINATION RULES (STRICTLY ENFORCE):**
+    - ONLY identify elements that are CLEARLY VISIBLE and have STRONG visual evidence in the image
+    - If you are uncertain about an element (even slightly), DO NOT include it - ERR on the side of caution
+    - DO NOT invent elements that are not in the image - this is a critical error
+    - DO NOT guess element types or labels - if unclear, exclude the element
+    - When in doubt, leave it out - PRECISION IS MORE IMPORTANT THAN RECALL
+    - Verify each element has BOTH: clear visual symbol pattern AND readable label/text
+    - Only include elements where you are >90% confident - when uncertain, exclude
+    - DO NOT include elements based on expected patterns - only actual visual evidence counts
+    **OUTPUT FORMAT:** Your entire response MUST be a single, valid JSON object with "elements" and "connections" keys.
+    
+    **1. "elements" List:**
+    - Find ONLY components that are CLEARLY VISIBLE with strong visual evidence
+    - REQUIRED KEYS: `"id"` (the text label, e.g., "P-101"), `"type"`, `"label"`, and a tight `"bbox"`.
+    - Only include 'Line_Split' and 'Line_Merge' if they are CLEARLY VISIBLE and have visual evidence
+    - If an element's label or type is ambiguous, DO NOT include it
+
+    **2. "connections" List:**
+    - Find ONLY direct connections between components that you have CLEARLY identified
+    - REQUIRED KEYS: `"from_id"`, `"to_id"`.
+    - Only connect elements that are in your "elements" list
+    - DO NOT invent connections - only include connections with clear visual evidence (visible lines)
+    - DO NOT invent ports or trace polylines. This will be handled by a later process.
+    - When uncertain about a connection, leave it out
+
+    **KNOWLEDGE BASE (Use these types):**
+    {known_types_json}
+
+    {legend_context}
+
+    **CORRECTION FEEDBACK (Fix these errors from the last run):**
+    {error_feedback}
+    
+    **EXAMPLE STRUCTURE (FOLLOW EXACTLY):**
+    ```json
+    {
+      "elements": [
+        {
+          "id": "Pump-101", "label": "Main Pump P-101", "type": "Pump",
+          "bbox": {"x": 0.1, "y": 0.2, "width": 0.05, "height": 0.04}
+        },
+        {
+          "id": "Valve-A", "label": "Isolation Valve", "type": "Valve",
+          "bbox": {"x": 0.3, "y": 0.4, "width": 0.02, "height": 0.03}
+        }
+      ],
+      "connections": [
+        {
+          "from_id": "Pump-101",
+          "to_id": "Valve-A"
+        }
+      ]
+    }
+    ```
+    
+  monolithic_analysis_prompt_template: |-
+    # This prompt is identical to the raster_analysis prompt for consistency.
+    **ROLE:** You are a P&ID analysis engine with high precision requirements.
+    **TASK:** Analyze the provided image segment and identify all components and their direct connections.
+    **CRITICAL ANTI-HALLUCINATION RULES (STRICTLY ENFORCE):**
+    - ONLY identify elements that are CLEARLY VISIBLE and have STRONG visual evidence in the image
+    - If you are uncertain about an element (even slightly), DO NOT include it - ERR on the side of caution
+    - DO NOT invent elements that are not in the image - this is a critical error
+    - DO NOT guess element types or labels - if unclear, exclude the element
+    - When in doubt, leave it out - PRECISION IS MORE IMPORTANT THAN RECALL
+    - Verify each element has BOTH: clear visual symbol pattern AND readable label/text
+    - Only include elements where you are >90% confident - when uncertain, exclude
+    - DO NOT include elements based on expected patterns - only actual visual evidence counts
+    **OUTPUT FORMAT:** Your entire response MUST be a single, valid JSON object with "elements" and "connections" keys.
+    
+    **1. "elements" List:**
+    - Find ONLY components that are CLEARLY VISIBLE with strong visual evidence
+    - REQUIRED KEYS: `"id"` (the text label, e.g., "P-101"), `"type"`, `"label"`, and a tight `"bbox"`.
+    - If an element's label or type is ambiguous, DO NOT include it
+
+    **2. "connections" List:**
+    - Find ONLY direct connections between components that you have CLEARLY identified
+    - REQUIRED KEYS: `"from_id"`, `"to_id"`.
+    - Only connect elements that are in your "elements" list
+    - DO NOT invent connections - only include connections with clear visual evidence (visible lines)
+    - DO NOT invent ports or trace polylines.
+    - When uncertain about a connection, leave it out
+
+    **KNOWLEDGE BASE:** [{component_list_str}]
+
+    {legend_context}
+
+    **CORRECTION FEEDBACK:** {error_feedback}
+      
+    **EXAMPLE STRUCTURE (FOLLOW EXACTLY):**
+    ```json
+    {
+      "elements": [
+        {
+          "id": "Pump-101", "label": "Main Pump P-101", "type": "Pump",
+          "bbox": {"x": 0.1, "y": 0.2, "width": 0.05, "height": 0.04}
+        },
+        {
+          "id": "Valve-A", "label": "Isolation Valve", "type": "Valve",
+          "bbox": {"x": 0.3, "y": 0.4, "width": 0.02, "height": 0.03}
+        }
+      ],
+      "connections": [
+        {
+          "from_id": "Pump-101",
+          "to_id": "Valve-A"
+        }
+      ]
+    }
+    ```
+
+  polyline_extraction_user_prompt: |
+    **ROLE:** You are a vectorization engine.
+    **TASK:** Analyze the provided pre-processed image, which ONLY shows pipelines. Trace the exact centerline of every visible line segment.
+    **OUTPUT:** A single JSON object with ONE key: "polylines", containing a list of objects.
+    **RULES:**
+    - Each object MUST contain `"polyline"`, a list of `[x, y]` coordinate pairs (floats 0-1).
+    - Provide ONLY the JSON object.
+
+  metacritic_prompt_template: |
+    **ROLE:** You are a meticulous P&ID Quality Assurance Engineer and a Metacritic expert.
+    **TASK:** You will be provided with two analysis results for the same P&ID image:
+    1.  The "Monolithic Analysis" (a global, high-level understanding).
+    2.  The "Swarm Analysis" (a detailed, tile-based understanding).
+
+    Your job is to identify high-level, logical, or systemic discrepancies between these two results. Focus on issues where one analysis sees something significant that the other completely misses or misinterprets, leading to a logical contradiction or gap in the overall understanding.
+
+    **WHAT TO LOOK FOR (Discrepancy IDs):**
+    - **Hallucinated_Elements**: Elements present in one analysis (e.g., Monolithic) that are completely absent or unidentifiable in the other (e.g., Swarm). This suggests a hallucination by the first analysis.
+    - **Missed_Connections**: Significant connections or relationships identified in one analysis (e.g., Monolithic) that are completely absent or fundamentally different in the other (e.g., Swarm), indicating a missed connection by the second.
+    - **Global_Inconsistency**: Broader logical contradictions or major structural differences between the two views (e.g., process flow, major component counts) that don't fall into the above categories.
+
+    **INPUT CONTEXT:**
+    - Monolithic Analysis Data: {monolith_json}
+    - Swarm Analysis Data: {swarm_json}
+
+    **CRITICAL OUTPUT FORMAT:**
+    Provide your judgment in a JSON array format. Each object in the array should represent a single, high-level discrepancy.
+    ```json
+    {{
+      "discrepancies": [
+        {{
+          "id": "Hallucinated_Element",
+          "description": "The Monolithic analysis reported a 'Heat Exchanger HX-101' at coordinates (X, Y), but no such element or a similar one was found in the Swarm analysis.",
+          "suggested_correction_action": "Verify existence or remove element from monolithic result."
+        }},
+        {{
+          "id": "Missed_Connection",
+          "description": "The Swarm analysis shows a pipe connecting 'Pump P-001' to 'Valve V-002', but the Monolithic analysis misses this critical connection.",
+          "suggested_correction_action": "Add missing relationship to monolithic result."
+        }},
+        {{
+          "id": "Global_Inconsistency",
+          "description": "The Monolithic analysis reports 5 reactors, while the Swarm analysis only identifies 2, indicating a major discrepancy in component count.",
+          "suggested_correction_action": "Reconcile component counts by re-evaluating both analyses in the conflicting zones."
+        }}
+      ]
+    }}
+    ```

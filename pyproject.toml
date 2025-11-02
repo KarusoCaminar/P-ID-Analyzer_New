@@ -1,0 +1,76 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pid-analyzer"
+version = "2.0.0"
+description = "Professional P&ID Analyzer with AI-powered multi-stage extraction"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [
+    {name = "Moritz Heinelt", email = "moritz.heinelt@googlemail.com"}
+]
+keywords = ["pid", "p&id", "diagram", "extraction", "ai", "llm"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+
+dependencies = [
+    "pydantic>=2.0.0",
+    "diskcache>=5.6.0",
+    "matplotlib>=3.7.0",
+    "networkx>=3.0",
+    "numpy>=1.24.0",
+    "opencv-python>=4.8.0",
+    "pandas>=2.0.0",
+    "pillow>=10.0.0",
+    "psutil>=5.9.0",
+    "PyMuPDF>=1.23.0",
+    "PyYAML>=6.0",
+    "python-dotenv>=1.0.0",
+    "python-Levenshtein>=0.21.0",
+    "scikit-learn>=1.3.0",
+    "tqdm>=4.66.0",
+    "vertexai>=1.38.0",
+    "filelock>=3.13.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4.0",
+    "pytest-cov>=4.1.0",
+    "black>=23.0.0",
+    "ruff>=0.1.0",
+    "mypy>=1.7.0",
+]
+
+[project.scripts]
+pid-analyzer = "src.analyzer.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/moritzheinelt/pid-analyzer"
+Documentation = "https://github.com/moritzheinelt/pid-analyzer/blob/main/README.md"
+Repository = "https://github.com/moritzheinelt/pid-analyzer"
+
+[tool.black]
+line-length = 100
+target-version = ['py310']
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+

@@ -1,0 +1,387 @@
+[
+    {
+        "symbol_id": "sym_68e79988929e",
+        "name": "Flow_text",
+        "source": "page_1_original_symbols.png",
+        "status": "neu",
+        "similar_to": null
+    },
+    {
+        "symbol_id": "sym_4861a47e2e5b",
+        "name": "Return",
+        "source": "page_1_original_symbols.png",
+        "status": "neu",
+        "similar_to": null
+    },
+    {
+        "symbol_id": "sym_4947522cad55",
+        "name": "Warm_text",
+        "source": "page_1_original_symbols.png",
+        "status": "neu",
+        "similar_to": null
+    },
+    {
+        "symbol_id": "sym_efeb04d0ed54",
+        "name": "Cold",
+        "source": "page_1_original_symbols.png",
+        "status": "neu",
+        "similar_to": null
+    },
+    {
+        "symbol_id": "sym_f1a42fae3b0b",
+        "name": "Pump",
+        "source": "page_1_original_symbols.png",
+        "status": "neu",
+        "similar_to": null
+    },
+    {
+        "symbol_id": "sym_7a57601187e7",
+        "name": "Pump_text",
+        "source": "page_1_original_symbols.png",
+        "status": "neu",
+        "similar_to": null
+    },
+    {
+        "symbol_id": "sym_df131a2ebe30",
+        "name": "Temperature Sensor",
+        "source": "page_1_original_symbols.png",
+        "status": "neu",
+        "similar_to": null
+    },
+    {
+        "symbol_id": "sym_8d86d339527a",
+        "name": "Volume Flow Sensor",
+        "source": "page_1_original_symbols.png",
+        "status": "neu",
+        "similar_to": null
+    },
+    {
+        "symbol_id": "sym_978ca51e1ec5",
+        "name": "3 Way Valve incl. Electric Actuator_text",
+        "source": "page_1_original_symbols.png",
+        "status": "neu",
+        "similar_to": null
+    },
+    {
+        "symbol_id": "sym_595787e9c8aa",
+        "name": "2 Way Valve incl. electric actuator_text",
+        "source": "page_1_original_symbols.png",
+        "status": "neu",
+        "similar_to": null
+    },
+    {
+        "symbol_id": "sym_b07eee2b0186",
+        "name": "Expansion Vessel_text",
+        "source": "page_1_original_symbols.png",
+        "status": "neu",
+        "similar_to": null
+    },
+    {
+        "symbol_id": "sym_4c0e682e5ef3",
+        "name": "Vent Valve_text",
+        "source": "page_1_original_symbols.png",
+        "status": "neu",
+        "similar_to": null
+    },
+    {
+        "symbol_id": "sym_c0be72741ca6",
+        "name": "Butterfly Valve_text",
+        "source": "page_1_original_symbols.png",
+        "status": "neu",
+        "similar_to": null
+    },
+    {
+        "symbol_id": "sym_d87184517a7c",
+        "name": "Flow_text",
+        "source": "page_3_original_symbols.png",
+        "status": "neu",
+        "similar_to": null
+    },
+    {
+        "symbol_id": "sym_33de88171647",
+        "name": "Return_text",
+        "source": "page_3_original_symbols.png",
+        "status": "neu",
+        "similar_to": null
+    },
+    {
+        "symbol_id": "sym_1d4930be5fa2",
+        "name": "Warm_text",
+        "source": "page_3_original_symbols.png",
+        "status": "neu",
+        "similar_to": null
+    },
+    {
+        "symbol_id": "sym_c82d94ac6ef0",
+        "name": "Cold_text",
+        "source": "page_3_original_symbols.png",
+        "status": "neu",
+        "similar_to": null
+    },
+    {
+        "symbol_id": "sym_2d0114259c03",
+        "name": "Pump_text",
+        "source": "page_3_original_symbols.png",
+        "status": "neu",
+        "similar_to": null
+    },
+    {
+        "symbol_id": "sym_f7f303952010",
+        "name": "Temperature Sensor_text",
+        "source": "page_3_original_symbols.png",
+        "status": "neu",
+        "similar_to": null
+    },
+    {
+        "symbol_id": "sym_4d10359a09d8",
+        "name": "Volume Flow Sensor_text",
+        "source": "page_3_original_symbols.png",
+        "status": "neu",
+        "similar_to": null
+    },
+    {
+        "symbol_id": "sym_0c399ee40559",
+        "name": "Check Valve_text",
+        "source": "page_3_original_symbols.png",
+        "status": "neu",
+        "similar_to": null
+    },
+    {
+        "symbol_id": "sym_d659c5968c07",
+        "name": "3 Way Valve incl. Electric Actuator_text",
+        "source": "page_3_original_symbols.png",
+        "status": "neu",
+        "similar_to": null
+    },
+    {
+        "symbol_id": "sym_41cc7752e8ff",
+        "name": "2 Way Valve incl. electric actuator_text",
+        "source": "page_3_original_symbols.png",
+        "status": "neu",
+        "similar_to": null
+    },
+    {
+        "symbol_id": "sym_a646d58dbdc0",
+        "name": "Expansion Vessel_text",
+        "source": "page_3_original_symbols.png",
+        "status": "neu",
+        "similar_to": null
+    },
+    {
+        "symbol_id": "sym_53395905489a",
+        "name": "Vent Valve_text",
+        "source": "page_3_original_symbols.png",
+        "status": "neu",
+        "similar_to": null
+    },
+    {
+        "symbol_id": "sym_621549793d01",
+        "name": "Butterfly Valve",
+        "source": "page_3_original_symbols.png",
+        "status": "neu",
+        "similar_to": null
+    },
+    {
+        "symbol_id": "sym_6abf9d07ecfb",
+        "name": "Butterfly Valve_text",
+        "source": "page_3_original_symbols.png",
+        "status": "neu",
+        "similar_to": null
+    },
+    {
+        "symbol_id": "sym_c41a3642c28f",
+        "name": "Flow_text",
+        "source": "page_4_original_symbols.png",
+        "status": "neu",
+        "similar_to": null
+    },
+    {
+        "symbol_id": "sym_6ac04193217f",
+        "name": "Return_text",
+        "source": "page_4_original_symbols.png",
+        "status": "neu",
+        "similar_to": null
+    },
+    {
+        "symbol_id": "sym_8cac4870fca6",
+        "name": "Cold Water (CN - HVFA)_text",
+        "source": "page_4_original_symbols.png",
+        "status": "neu",
+        "similar_to": null
+    },
+    {
+        "symbol_id": "sym_6eac0aefdd76",
+        "name": "Cooling Water (HNLT - HVFA)",
+        "source": "page_4_original_symbols.png",
+        "status": "neu",
+        "similar_to": null
+    },
+    {
+        "symbol_id": "sym_7f1ceb5916c3",
+        "name": "Cooling Water (HNLT)",
+        "source": "page_4_original_symbols.png",
+        "status": "neu",
+        "similar_to": null
+    },
+    {
+        "symbol_id": "sym_b24f8a2a0fee",
+        "name": "Ethylene Glykol 34 vol.%",
+        "source": "page_4_original_symbols.png",
+        "status": "neu",
+        "similar_to": null
+    },
+    {
+        "symbol_id": "sym_d1658a1713df",
+        "name": "Pump_text",
+        "source": "page_4_original_symbols.png",
+        "status": "neu",
+        "similar_to": null
+    },
+    {
+        "symbol_id": "sym_e57ab7fcfe2e",
+        "name": "Temperature Sensor",
+        "source": "page_4_original_symbols.png",
+        "status": "neu",
+        "similar_to": null
+    },
+    {
+        "symbol_id": "sym_7472c2a12bbc",
+        "name": "Volume Flow Sensor",
+        "source": "page_4_original_symbols.png",
+        "status": "neu",
+        "similar_to": null
+    },
+    {
+        "symbol_id": "sym_deebffad9b5c",
+        "name": "Filter",
+        "source": "page_4_original_symbols.png",
+        "status": "neu",
+        "similar_to": null
+    },
+    {
+        "symbol_id": "sym_94a2a9a9f49a",
+        "name": "3 Way Valve incl. electric Actuator_text",
+        "source": "page_4_original_symbols.png",
+        "status": "neu",
+        "similar_to": null
+    },
+    {
+        "symbol_id": "sym_91f5ea7fb751",
+        "name": "2 Way Valve incl. electric actuator_text",
+        "source": "page_4_original_symbols.png",
+        "status": "neu",
+        "similar_to": null
+    },
+    {
+        "symbol_id": "sym_f40d426c2b24",
+        "name": "Expansion Vessel_text",
+        "source": "page_4_original_symbols.png",
+        "status": "neu",
+        "similar_to": null
+    },
+    {
+        "symbol_id": "sym_e99e3847649c",
+        "name": "Vent Valve_text",
+        "source": "page_4_original_symbols.png",
+        "status": "neu",
+        "similar_to": null
+    },
+    {
+        "symbol_id": "sym_fa33ad66729c",
+        "name": "Butterfly Valve_text",
+        "source": "page_4_original_symbols.png",
+        "status": "neu",
+        "similar_to": null
+    },
+    {
+        "symbol_id": "sym_eeb2cb4e6e8b",
+        "name": "Safety Module",
+        "source": "page_4_original_symbols.png",
+        "status": "neu",
+        "similar_to": null
+    },
+    {
+        "symbol_id": "sym_5f111e7f25fa",
+        "name": "Check Valve",
+        "source": "page_4_original_symbols.png",
+        "status": "neu",
+        "similar_to": null
+    },
+    {
+        "symbol_id": "sym_54a119d6b4e0",
+        "name": "Return",
+        "source": "page_2_original_symbols.png",
+        "status": "neu",
+        "similar_to": null
+    },
+    {
+        "symbol_id": "sym_e60f2eeb3e4d",
+        "name": "Warm",
+        "source": "page_2_original_symbols.png",
+        "status": "neu",
+        "similar_to": null
+    },
+    {
+        "symbol_id": "sym_cf3c3854a603",
+        "name": "Pump",
+        "source": "page_2_original_symbols.png",
+        "status": "neu",
+        "similar_to": null
+    },
+    {
+        "symbol_id": "sym_9a906f3197ff",
+        "name": "Temperature Sensor",
+        "source": "page_2_original_symbols.png",
+        "status": "neu",
+        "similar_to": null
+    },
+    {
+        "symbol_id": "sym_5f4f586bf352",
+        "name": "Volume Flow Sensor_text",
+        "source": "page_2_original_symbols.png",
+        "status": "neu",
+        "similar_to": null
+    },
+    {
+        "symbol_id": "sym_02b379868250",
+        "name": "Check Valve",
+        "source": "page_2_original_symbols.png",
+        "status": "neu",
+        "similar_to": null
+    },
+    {
+        "symbol_id": "sym_2c5136ad8bb5",
+        "name": "3 Way Valve incl. Electric Actuator_text",
+        "source": "page_2_original_symbols.png",
+        "status": "neu",
+        "similar_to": null
+    },
+    {
+        "symbol_id": "sym_c6be489a5a7e",
+        "name": "2 Way Valve incl. electric actuator_text",
+        "source": "page_2_original_symbols.png",
+        "status": "neu",
+        "similar_to": null
+    },
+    {
+        "symbol_id": "sym_31bf26eca375",
+        "name": "Expansion Vessel_text",
+        "source": "page_2_original_symbols.png",
+        "status": "neu",
+        "similar_to": null
+    },
+    {
+        "symbol_id": "sym_9b1b80746ca1",
+        "name": "Vent Valve_text",
+        "source": "page_2_original_symbols.png",
+        "status": "neu",
+        "similar_to": null
+    },
+    {
+        "symbol_id": "sym_e44be273cabb",
+        "name": "Butterfly Valve",
+        "source": "page_2_original_symbols.png",
+        "status": "neu",
+        "similar_to": null
+    }
+]

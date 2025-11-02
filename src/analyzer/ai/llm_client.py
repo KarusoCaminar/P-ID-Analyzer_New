@@ -1,0 +1,684 @@
+"""
+LLM Client - Refactored from llm_handler.py.
+
+Handles interactions with LLM providers (Google Vertex AI, etc.)
+with improved error handling, caching, and retry logic.
+"""
+
+import os
+import json
+import time
+import logging
+import hashlib
+import traceback
+from pathlib import Path
+from typing import Dict, Any, Optional, List, Union
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
+from io import BytesIO
+from datetime import datetime
+
+import diskcache
+import vertexai
+from vertexai.generative_models import HarmCategory, HarmBlockThreshold, GenerativeModel, Part
+from PIL import Image
+
+from .error_handler import IntelligentRetryHandler, CircuitBreaker, ErrorType
+from src.utils.schemas import validate_request_payload, validate_response
+from src.utils.debug_capture import (
+    generate_request_id, capture_request, capture_response, write_debug_file
+)
+
+logger = logging.getLogger(__name__)
+
+
+class LLMClient:
+    """
+    Client for interacting with LLM providers (currently Google Vertex AI).
+    
+    Features:
+    - Multi-provider support (prepared for OpenAI, Claude, etc.)
+    - Disk caching for API responses
+    - Retry logic with exponential backoff
+    - Request batching
+    - Timeout handling
+    """
+    
+    def __init__(
+        self,
+        project_id: str,
+        default_location: str,
+        config: Dict[str, Any]
+    ):
+        self.project_id = project_id
+        self.default_location = default_location
+        self.config = config
+        
+        # Initialize Vertex AI SDK
+        vertexai.init(project=self.project_id, location=self.default_location)
+        
+        self.gemini_clients: Dict[str, GenerativeModel] = {}
+        self._initialized_locations: set[str] = set()
+        
+        # Load models
+        self._load_models()
+        
+        # Setup multi-level cache (memory + disk)
+        cache_dir_name = config.get('paths', {}).get('llm_cache_dir', '.pni_analyzer_cache')
+        cache_path = Path(str(cache_dir_name))
+        cache_size_gb = config.get('logic_parameters', {}).get('llm_disk_cache_size_gb', 2)
+        memory_cache_size = config.get('logic_parameters', {}).get('llm_memory_cache_size', 100)
+        
+        # Use multi-level cache from cache service
+        from src.services.cache_service import MultiLevelCache
+        self.disk_cache = MultiLevelCache(
+            cache_dir=cache_path,
+            memory_size=memory_cache_size,
+            disk_size_gb=cache_size_gb,
+            memory_ttl_hours=24
+        )
+        logger.info(f"Multi-level cache initialized at: {cache_path} (Memory={memory_cache_size}, Disk={cache_size_gb}GB)")
+        
+        # Timeout executor
+        max_workers_timeout = config.get('logic_parameters', {}).get('llm_timeout_executor_workers', 1)
+        self.timeout_executor = ThreadPoolExecutor(max_workers=max_workers_timeout)
+        
+        # Intelligent error handling
+        circuit_breaker = CircuitBreaker(
+            failure_threshold=config.get('logic_parameters', {}).get('circuit_breaker_failure_threshold', 5),
+            recovery_timeout=config.get('logic_parameters', {}).get('circuit_breaker_recovery_timeout', 60)
+        )
+        self.retry_handler = IntelligentRetryHandler(circuit_breaker)
+        
+        # Debug directory
+        debug_dir = config.get('paths', {}).get('debug_dir', 'outputs/debug')
+        self.debug_dir = Path(debug_dir)
+        self.debug_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Load circuit breaker state if exists
+        circuit_state_path = self.debug_dir / 'circuit-state.json'
+        circuit_breaker.load_state(circuit_state_path)
+    
+    def _load_models(self) -> None:
+        """Load all configured models."""
+        for model_name_display, model_info in self.config.get("models", {}).items():
+            model_id = model_info.get("id")
+            if not model_id:
+                logger.warning(f"Model '{model_name_display}' in config has no ID. Skipping.")
+                continue
+            
+            if model_info.get('access_method') == 'gemini':
+                try:
+                    if model_id not in self.gemini_clients:
+                        self.gemini_clients[model_id] = GenerativeModel(model_id)
+                        logger.info(f"Successfully loaded Gemini model: {model_id}")
+                except Exception as e:
+                    logger.error(f"Error loading Gemini model {model_id}: {e}", exc_info=True)
+    
+    def _sanitize_payload(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Sanitize payload for JSON serialization.
+        
+        Converts non-serializable objects to safe types:
+        - Dates → ISO format strings
+        - Functions → removed (keep identifiers only)
+        - Circular refs → detected and resolved
+        - Enums → numbers or strings
+        
+        Args:
+            payload: Payload to sanitize
+            
+        Returns:
+            Sanitized payload
+        """
+        def _sanitize(obj: Any, visited: Optional[set] = None) -> Any:
+            if visited is None:
+                visited = set()
+            
+            # Check for circular references
+            obj_id = id(obj)
+            if obj_id in visited:
+                return "<circular_reference>"
+            visited.add(obj_id)
+            
+            try:
+                if isinstance(obj, dict):
+                    result = {}
+                    for k, v in obj.items():
+                        # Skip functions and callables
+                        if callable(v) and not isinstance(v, type):
+                            continue
+                        result[k] = _sanitize(v, visited)
+                    return result
+                elif isinstance(obj, list):
+                    return [_sanitize(item, visited) for item in obj]
+                elif isinstance(obj, (str, int, float, bool, type(None))):
+                    return obj
+                elif isinstance(obj, datetime):
+                    return obj.isoformat()
+                elif hasattr(obj, '__dict__'):
+                    # Try to convert objects with __dict__ to dict
+                    try:
+                        return _sanitize(obj.__dict__, visited)
+                    except Exception:
+                        return str(obj)
+                else:
+                    # Fallback to string representation
+                    return str(obj)
+            finally:
+                visited.discard(obj_id)
+        
+        return _sanitize(payload)
+    
+    def _validate_payload_size(self, payload: Dict[str, Any], max_size_mb: float = 4.0) -> tuple[bool, Optional[str]]:
+        """
+        Validate payload size.
+        
+        Args:
+            payload: Payload to validate
+            max_size_mb: Maximum size in MB
+            
+        Returns:
+            Tuple of (is_valid, error_message)
+        """
+        try:
+            payload_json = json.dumps(payload)
+            size_bytes = len(payload_json.encode('utf-8'))
+            size_mb = size_bytes / (1024 * 1024)
+            
+            if size_mb > max_size_mb:
+                return False, f"Payload size {size_mb:.2f}MB exceeds maximum {max_size_mb}MB"
+            
+            return True, None
+        except Exception as e:
+            return False, f"Failed to validate payload size: {str(e)}"
+    
+    def call_llm(
+        self,
+        model_info: Dict[str, Any],
+        system_prompt: str,
+        user_prompt: str,
+        image_path: Optional[str] = None,
+        use_cache: bool = True,
+        expected_json_keys: Optional[List[str]] = None,
+        timeout: Optional[int] = None
+    ) -> Optional[Union[Dict[str, Any], str]]:
+        """
+        Call LLM with image and prompt.
+        
+        Args:
+            model_info: Model configuration dict
+            system_prompt: System prompt
+            user_prompt: User prompt
+            image_path: Optional path to image
+            use_cache: Whether to use cache
+            expected_json_keys: Expected JSON keys for validation
+            timeout: Optional timeout in seconds
+            
+        Returns:
+            LLM response (dict if JSON, else str), or None on error
+        """
+        # Generate cache key
+        cache_key = None
+        if use_cache:
+            cache_key = self._generate_cache_key(model_info, system_prompt, user_prompt, image_path)
+            if cache_key in self.disk_cache:
+                logger.debug(f"Cache hit for LLM call")
+                return self.disk_cache[cache_key]
+        
+        # Prepare request
+        model_id = model_info.get('id')
+        if model_id not in self.gemini_clients:
+            logger.error(f"Model {model_id} not loaded")
+            return None
+        
+        model = self.gemini_clients[model_id]
+        generation_config = model_info.get('generation_config', {})
+        
+        # Generate request ID for tracking
+        request_id = generate_request_id()
+        
+        # Prepare content
+        parts = [user_prompt]
+        if image_path and os.path.exists(image_path):
+            parts.append(self._image_to_part(image_path))
+        
+        # Build payload for validation
+        payload = {
+            "model": model_id,
+            "parts": [part if isinstance(part, str) else str(part) for part in parts],
+            "generation_config": generation_config
+        }
+        
+        # Sanitize payload
+        try:
+            sanitized_payload = self._sanitize_payload(payload)
+        except Exception as e:
+            logger.warning(f"Failed to sanitize payload: {e}")
+            sanitized_payload = payload
+        
+        # Validate payload
+        payload_validation_ok = True
+        payload_validation_errors = []
+        
+        # Size validation
+        size_valid, size_error = self._validate_payload_size(sanitized_payload)
+        if not size_valid:
+            payload_validation_ok = False
+            payload_validation_errors.append(size_error)
+        
+        # Schema validation (optional - may not always apply)
+        try:
+            # Note: SDK handles serialization, but we validate structure
+            # Try to validate payload structure if possible
+            schema_valid, schema_errors = validate_request_payload(sanitized_payload)
+            if not schema_valid:
+                payload_validation_ok = False
+                payload_validation_errors.extend(schema_errors or [])
+                logger.warning(f"Payload schema validation failed: {schema_errors}")
+        except Exception as e:
+            logger.debug(f"Schema validation warning: {e}")
+        
+        # Capture request
+        try:
+            capture_request(request_id, sanitized_payload, output_dir=self.debug_dir)
+        except Exception as e:
+            logger.debug(f"Failed to capture request: {e}")
+        
+        # Get timeout from config or parameter
+        base_timeout = timeout or self.config.get('logic_parameters', {}).get('llm_default_timeout', 240)
+        max_retries = self.config.get('logic_parameters', {}).get('llm_max_retries', 3)
+        
+        # Adjust timeout based on payload size
+        # Large payloads should have shorter timeouts to fail fast
+        total_prompt_length = len(system_prompt) + len(user_prompt)
+        if total_prompt_length > 100000:  # >100KB
+            timeout_seconds = min(base_timeout, 30)  # Max 30s for very large payloads
+            logger.warning(f"Very large payload ({total_prompt_length} chars) - using reduced timeout: {timeout_seconds}s")
+        elif total_prompt_length > 50000:  # >50KB
+            timeout_seconds = min(base_timeout, 60)  # Max 60s for large payloads
+            logger.info(f"Large payload ({total_prompt_length} chars) - using reduced timeout: {timeout_seconds}s")
+        else:
+            timeout_seconds = base_timeout
+        
+        # Intelligent retry logic with error classification
+        last_error = None
+        api_error_data = None
+        response_summary = {"success": False, "status_code": None, "tokens": None}
+        
+        for attempt in range(max_retries):
+            try:
+                # Check circuit breaker before making call (minimizes API calls)
+                if not self.retry_handler.circuit_breaker.can_proceed():
+                    logger.warning(
+                        f"Circuit breaker is {self.retry_handler.circuit_breaker.get_state()}. "
+                        "Skipping API call to minimize failures."
+                    )
+                    # Return cached result if available (fallback)
+                    if cache_key and cache_key in self.disk_cache:
+                        logger.info("Returning cached result due to circuit breaker")
+                        return self.disk_cache[cache_key]
+                    return None
+                
+                response = self._call_with_timeout(
+                    model,
+                    parts,
+                    generation_config,
+                    timeout_seconds
+                )
+                
+                # Capture response
+                try:
+                    capture_response(request_id, response, output_dir=self.debug_dir)
+                except Exception as e:
+                    logger.debug(f"Failed to capture response: {e}")
+                
+                # Parse response
+                parsed_response = self._parse_response(response, expected_json_keys)
+                
+                # Update response summary
+                tokens = None
+                if hasattr(response, 'usage_metadata') and response.usage_metadata:
+                    # UsageMetadata is a proto object, access attributes directly
+                    tokens = getattr(response.usage_metadata, 'total_token_count', None)
+                
+                response_summary = {
+                    "success": True,
+                    "status_code": 200,
+                    "tokens": tokens
+                }
+                
+                # Cache result (even on success, helps with future failures)
+                if use_cache and cache_key:
+                    self.disk_cache[cache_key] = parsed_response
+                
+                # Record success for circuit breaker
+                self.retry_handler.record_success()
+                
+                # Save circuit breaker state
+                try:
+                    circuit_state_path = self.debug_dir / 'circuit-state.json'
+                    self.retry_handler.circuit_breaker.save_state(circuit_state_path)
+                except Exception as e:
+                    logger.debug(f"Failed to save circuit breaker state: {e}")
+                
+                # Write debug file for successful call
+                try:
+                    write_debug_file(
+                        request_id=request_id,
+                        call_type="sync",
+                        payload_validation={"ok": payload_validation_ok, "errors": payload_validation_errors},
+                        api_error=None,
+                        response_summary=response_summary,
+                        attempts=attempt + 1,
+                        suggested_patch=None,
+                        output_path=self.debug_dir / 'workflow-debug.json'
+                    )
+                except Exception as e:
+                    logger.debug(f"Failed to write debug file: {e}")
+                
+                return parsed_response
+                
+            except FutureTimeoutError as e:
+                last_error = e
+                logger.warning(f"LLM call timed out (attempt {attempt + 1}/{max_retries})")
+                
+                # Capture error response
+                try:
+                    capture_response(request_id, None, error=e, output_dir=self.debug_dir)
+                except Exception:
+                    pass
+                
+                # Record failure
+                self.retry_handler.record_failure(e)
+                
+                # Update error data
+                api_error_data = {
+                    "message": str(e),
+                    "stack": traceback.format_exc(),
+                    "code": "TIMEOUT"
+                }
+                
+                # Intelligent retry decision
+                should_retry, backoff_seconds = self.retry_handler.should_retry(e, attempt, max_retries)
+                
+                if should_retry:
+                    # For timeout errors, don't increase timeout (pointless)
+                    # Instead, keep same timeout or even reduce slightly
+                    if "timeout" in str(e).lower():
+                        logger.warning("Timeout error - keeping same timeout for retry (increasing timeout won't help)")
+                        # Don't increase timeout, it's already too long
+                    else:
+                        timeout_seconds = min(timeout_seconds * 1.5, 600)  # Cap timeout at 10 minutes
+                    time.sleep(backoff_seconds)
+                    continue
+                else:
+                    break
+                    
+            except Exception as e:
+                last_error = e
+                logger.error(f"LLM call error (attempt {attempt + 1}/{max_retries}): {e}")
+                
+                # Capture error response
+                try:
+                    capture_response(request_id, None, error=e, output_dir=self.debug_dir)
+                except Exception:
+                    pass
+                
+                # Record failure
+                self.retry_handler.record_failure(e)
+                
+                # Update error data
+                api_error_data = {
+                    "message": str(e),
+                    "stack": traceback.format_exc(),
+                    "code": type(e).__name__
+                }
+                
+                # Check if serialization error - use fallback
+                error_info = self.retry_handler.error_classifier.classify_error(e)
+                if error_info.error_type == ErrorType.SERIALIZATION:
+                    logger.warning("Serialization error detected - using fallback (non-streaming)")
+                    # Try fallback: non-streaming call
+                    try:
+                        fallback_response = self._call_with_fallback(
+                            model, parts, generation_config, timeout_seconds
+                        )
+                        if fallback_response:
+                            parsed_response = self._parse_response(fallback_response, expected_json_keys)
+                            if use_cache and cache_key:
+                                self.disk_cache[cache_key] = parsed_response
+                            self.retry_handler.record_success()
+                            
+                            # Write debug file
+                            try:
+                                write_debug_file(
+                                    request_id=request_id,
+                                    call_type="sync",
+                                    payload_validation={"ok": payload_validation_ok, "errors": payload_validation_errors},
+                                    api_error=api_error_data,
+                                    response_summary={"success": True, "status_code": 200, "tokens": None},
+                                    attempts=attempt + 1,
+                                    suggested_patch={"type": "fallback_to_non_streaming", "applied": True},
+                                    output_path=self.debug_dir / 'workflow-debug.json'
+                                )
+                            except Exception:
+                                pass
+                            
+                            return parsed_response
+                    except Exception as fallback_error:
+                        logger.error(f"Fallback also failed: {fallback_error}")
+                
+                # Intelligent retry decision with error classification
+                should_retry, backoff_seconds = self.retry_handler.should_retry(e, attempt, max_retries)
+                
+                if should_retry:
+                    time.sleep(backoff_seconds)
+                    continue
+                else:
+                    # For non-retryable errors, return cached result if available (fallback)
+                    if cache_key and cache_key in self.disk_cache:
+                        logger.info("Returning cached result due to non-retryable error")
+                        return self.disk_cache[cache_key]
+                    break
+        
+        # All retries failed - try to return cached result as fallback
+        if cache_key and cache_key in self.disk_cache:
+            logger.warning(
+                f"All retry attempts failed. Returning cached result as fallback. "
+                f"Last error: {last_error}"
+            )
+            return self.disk_cache[cache_key]
+        
+        # Save circuit breaker state
+        try:
+            circuit_state_path = self.debug_dir / 'circuit-state.json'
+            self.retry_handler.circuit_breaker.save_state(circuit_state_path)
+        except Exception as e:
+            logger.debug(f"Failed to save circuit breaker state: {e}")
+        
+        # Write debug file for failed call
+        try:
+            write_debug_file(
+                request_id=request_id,
+                call_type="sync",
+                payload_validation={"ok": payload_validation_ok, "errors": payload_validation_errors},
+                api_error=api_error_data,
+                response_summary=response_summary,
+                attempts=max_retries,
+                suggested_patch=None,
+                output_path=self.debug_dir / 'workflow-debug.json'
+            )
+        except Exception as e:
+            logger.debug(f"Failed to write debug file: {e}")
+        
+        logger.error(f"All retry attempts failed for LLM call. Last error: {last_error}")
+        return None
+    
+    def _call_with_fallback(
+        self,
+        model: GenerativeModel,
+        parts: List[Union[str, Part]],
+        generation_config: Dict[str, Any],
+        timeout: int
+    ) -> Any:
+        """
+        Fallback method for API calls when streaming fails.
+        
+        Tries non-streaming call with same content (potentially truncated).
+        
+        Args:
+            model: Generative model
+            parts: Content parts
+            generation_config: Generation config
+            timeout: Timeout in seconds
+            
+        Returns:
+            Response or None on error
+        """
+        try:
+            # For SDK-based calls, fallback is same as normal call
+            # This is placeholder for future streaming implementation
+            def _call():
+                return model.generate_content(
+                    parts,
+                    generation_config=generation_config,
+                    safety_settings={
+                        HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
+                        HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
+                        HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
+                        HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
+                    }
+                )
+            
+            future = self.timeout_executor.submit(_call)
+            return future.result(timeout=timeout)
+        except Exception as e:
+            logger.error(f"Fallback call failed: {e}")
+            return None
+    
+    def _call_with_timeout(
+        self,
+        model: GenerativeModel,
+        parts: List[Union[str, Part]],
+        generation_config: Dict[str, Any],
+        timeout: int
+    ) -> Any:  # Vertex AI response type
+        """Call model with timeout."""
+        def _call():
+            return model.generate_content(
+                parts,
+                generation_config=generation_config,
+                safety_settings={
+                    HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
+                    HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
+                    HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
+                    HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
+                }
+            )
+        
+        future = self.timeout_executor.submit(_call)
+        return future.result(timeout=timeout)
+    
+    def _image_to_part(self, image_path: str) -> Part:
+        """Convert image path to Vertex AI Part."""
+        with open(image_path, "rb") as f:
+            image_bytes = f.read()
+        return Part.from_data(image_bytes, mime_type="image/png")
+    
+    def _generate_cache_key(
+        self,
+        model_info: Dict[str, Any],
+        system_prompt: str,
+        user_prompt: str,
+        image_path: Optional[str]
+    ) -> str:
+        """Generate cache key for request."""
+        key_parts = [
+            model_info.get('id', ''),
+            system_prompt,
+            user_prompt
+        ]
+        if image_path:
+            # Hash image file for cache key
+            with open(image_path, "rb") as f:
+                image_hash = hashlib.md5(f.read()).hexdigest()
+            key_parts.append(image_hash)
+        key_string = "|".join(key_parts)
+        return hashlib.sha256(key_string.encode()).hexdigest()
+    
+    def _parse_response(
+        self,
+        response: Any,
+        expected_json_keys: Optional[List[str]] = None
+    ) -> Union[Dict[str, Any], str]:
+        """Parse LLM response."""
+        if not hasattr(response, 'text'):
+            logger.error("LLM response has no 'text' attribute")
+            return {}
+        
+        text = response.text.strip()
+        
+        # Try to parse as JSON
+        try:
+            parsed = json.loads(text)
+            if isinstance(parsed, dict):
+                # Validate expected keys
+                if expected_json_keys:
+                    missing = [k for k in expected_json_keys if k not in parsed]
+                    if missing:
+                        logger.warning(f"Expected JSON keys missing: {missing}")
+                return parsed
+            return text
+        except json.JSONDecodeError:
+            # Try to extract JSON from markdown code blocks
+            import re
+            json_match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', text, re.DOTALL)
+            if json_match:
+                try:
+                    parsed = json.loads(json_match.group(1))
+                    return parsed
+                except json.JSONDecodeError:
+                    pass
+            return text
+    
+    def get_image_embedding(self, image_input: Union[str, Image.Image]) -> Optional[List[float]]:
+        """
+        Get image embedding using Vertex AI MultiModal Embedding Model.
+        
+        Args:
+            image_input: Path to image (str) or PIL.Image object
+            
+        Returns:
+            Embedding vector or None on error
+        """
+        try:
+            from vertexai.vision_models import MultiModalEmbeddingModel, Image as VertexImage
+            
+            # Initialize model
+            model = MultiModalEmbeddingModel.from_pretrained("multimodalembedding@001")
+            
+            # Convert input to Vertex Image
+            if isinstance(image_input, str):
+                if not os.path.exists(image_input):
+                    logger.error(f"Image path does not exist: {image_input}")
+                    return None
+                vertex_image = VertexImage.load_from_file(image_input)
+            elif isinstance(image_input, Image.Image):
+                # Convert PIL to bytes
+                buffered = BytesIO()
+                image_input.save(buffered, format="PNG")
+                vertex_image = VertexImage.from_bytes(buffered.getvalue())
+            else:
+                logger.error(f"Invalid image input type: {type(image_input)}")
+                return None
+            
+            # Get embedding
+            embeddings = model.get_embeddings(image=vertex_image)
+            if embeddings and hasattr(embeddings, 'image_embedding') and embeddings.image_embedding:
+                return list(embeddings.image_embedding)
+            return None
+            
+        except Exception as e:
+            logger.error(f"Error getting image embedding: {e}", exc_info=True)
+            return None
+

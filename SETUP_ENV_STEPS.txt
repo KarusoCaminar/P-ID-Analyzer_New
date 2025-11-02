@@ -1,0 +1,28 @@
+ANLEITUNG: .env Datei erstellen
+====================================
+
+Da die .env Datei aus Sicherheitsgründen nicht automatisch erstellt werden kann,
+muss sie manuell erstellt werden:
+
+SCHRITT 1: Erstelle eine neue Datei namens ".env" im Projekt-Root
+   Pfad: C:\Users\Moritz\Desktop\pid_analyzer_v2\.env
+
+SCHRITT 2: Kopiere folgenden Inhalt in die Datei:
+
+GCP_PROJECT_ID=koretex-zugang
+GCP_PROJECT_NUMBER=748084370989
+GCP_LOCATION=us-central1
+
+SCHRITT 3: Speichere die Datei (ohne weitere Endung!)
+
+SCHRITT 4: Prüfe ob es funktioniert:
+   python test_system_ready.py
+
+ODER
+
+SCHRITT 4: Starte automatisierten Test:
+   python run_automated_test.py
+
+WICHTIG: Die .env Datei wird NICHT ins Git hochgeladen (ist in .gitignore)
+
+
