@@ -137,12 +137,13 @@ def extract_viewshots_from_pretraining_symbols(
 
 def main():
     """Main function to extract viewshots."""
-    project_root = Path(__file__).parent.parent
+    # Fix: Get project root correctly (3 levels up from scripts/utilities/)
+    project_root = Path(__file__).parent.parent.parent
     
     # Define paths
     uni_bilder_dir = project_root / "training_data" / "complex_pids"
     output_dir = project_root / "training_data" / "viewshot_examples"
-    output_dir.mkdir(exist_ok=True)
+    output_dir.mkdir(parents=True, exist_ok=True)
     
     # Create type directories
     for type_name in ['valve', 'pump', 'flow_sensor', 'mixer', 'source', 'sink', 'sample_point']:

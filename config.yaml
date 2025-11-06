@@ -45,13 +45,15 @@
 # Pfade zu den Konfigurationsdateien und -verzeichnissen
 paths:
   element_type_list: "element_type_list.json"
-  learning_db: "learning_db.json"
+  learning_db: "training_data/learning_db.json"
   temp_symbol_dir: "temp_symbols_for_embeddings"
   # NEU: Verzeichnis für den LLM-Disk-Cache. Wird relativ zum Projekt-Root interpretiert.
   llm_cache_dir: ".pni_analyzer_cache"
-  learned_symbols_images_dir: "learned_symbols_images"
+  learned_symbols_images_dir: "training_data/learned_symbols_images"
   # Pretraining symbols directory (PDF collections, legend symbols, etc.)
   pretraining_symbols: "training_data/pretraining_symbols"
+  # Viewshots directory (visual references for LLM prompts)
+  viewshot_examples_dir: "training_data/viewshot_examples"
 
 # Definition aller verfügbaren Modelle, die von der GUI und dem CLI genutzt werden
 models:
@@ -270,7 +272,7 @@ logic_parameters:
   
   # PHASE 5.4: Maximale Anzahl paralleler Worker für die Analyse-Aufrufe (max 8-10 für API-Limits)
   # Increased from 4 to 6 for faster processing (Uni-Bilder optimization)
-  llm_executor_workers: 6
+  llm_executor_workers: 4  # Reduziert von 6 auf 4 für bessere Stabilität bei komplexen P&IDs
   
   # ----------------------------------------------------
   # Phase 1: BBox Validierung & Verfeinerung
@@ -281,12 +283,16 @@ logic_parameters:
   max_excluded_area_percentage: 0.5
   # BBox-Verfeinerung aktivieren (Verkleinern wenn zu groß)
   bbox_refinement_enabled: true
+  # Iterative Legend BBox-Verfeinerung (2-3 Iterationen bis optimal)
+  use_legend_bbox_refinement: true  # Aktiviert iterative BBox-Verfeinerung mit visueller LLM-Rückmeldung
+  # Visuelles Feedback für Self-Correction Loop (KI sieht ihre eigenen Ergebnisse)
+  use_visual_feedback: true  # Aktiviert visuelles Feedback: Debug-Map wird generiert und an MultiModelCritic gesendet
 
   # ----------------------------------------------------
   # LLM Handler / Caching / Timeouts
   # ----------------------------------------------------
   # Standard-Timeout für einen LLM-Aufruf in Sekunden (höher für starke Modelle wie Pro)
-  llm_default_timeout: 240
+  llm_default_timeout: 300  # Erhöht von 240 auf 300 Sekunden (5 Minuten) für komplexe P&IDs
   # Maximale Anzahl an Wiederholungsversuchen bei einem API-Fehler
   llm_max_retries: 3
   # Größe des Festplatten-Caches für LLM-Antworten in Gigabyte
@@ -298,9 +304,9 @@ logic_parameters:
   # Circuit Breaker Configuration
   # ----------------------------------------------------
   # Anzahl Fehler, bevor der Circuit Breaker öffnet (erhöht für komplexe Analysen mit vielen Tiles)
-  circuit_breaker_failure_threshold: 15   # Erhöht von 5 auf 15 für komplexe P&IDs (70 Tiles + 6 Quadranten)
+  circuit_breaker_failure_threshold: 40   # Erhöht von 20 auf 40 für komplexe P&IDs (76+ API-Aufrufe: 70 Tiles + 6 Quadranten)
   # Wartezeit in Sekunden, bevor der Circuit Breaker versucht, sich zu erholen
-  circuit_breaker_recovery_timeout: 120   # Erhöht von 60 auf 120 Sekunden (2 Minuten)
+  circuit_breaker_recovery_timeout: 180   # Erhöht von 120 auf 180 Sekunden (3 Minuten)
   
   # ----------------------------------------------------
   # LLM Logging Configuration
@@ -1072,3 +1078,81 @@ prompts:
     - **Be precise:** Include element IDs, coordinates, confidence scores, AND IoU values where relevant
     - **For Hallucinated_Elements:** ALWAYS include IoU calculation in description (e.g., "IoU = 0.25 < 0.3 threshold, element absent in other analysis")
     - Be actionable: suggested_correction_action must be specific and executable
+
+  # ----------------------------------------------------
+  # Visual Feedback Critique Prompt (for MultiModelCritic)
+  # ----------------------------------------------------
+  visual_feedback_critique_prompt_template: |
+    **TASK:** Du bist ein P&ID-Chef-Inspektor mit visueller Expertise. Du wirst zwei Bilder sehen:
+
+    1. **[Originalbild]:** Das zu analysierende P&ID-Diagramm (wird im Prompt erwähnt, aber du siehst das Debug-Bild)
+    2. **[Debug-Bild]:** Eine Visualisierung der aktuellen Analyse (was die untergeordnete KI erkannt hat) - DIESES BILD SIEHST DU
+
+    **AKTUELLE ANALYSE (JSON):**
+    - Elemente: {elements_json}
+    - Verbindungen: {connections_json}
+
+    {legend_context}
+
+    **WICHTIG:** Das Debug-Bild zeigt die aktuellen Bounding Boxes und Verbindungen, die die KI erkannt hat. 
+    Du musst dieses Bild mit dem Originalbild vergleichen (das im Prompt beschrieben wird).
+
+    **AUFGABE:**
+    1. **Vergleiche** das [Debug-Bild] mit dem [Originalbild] (das im Prompt beschrieben wird)
+    2. **Identifiziere** alle visuellen Fehler:
+       - Fehlende Bounding Boxes (Elemente im Original, aber nicht im Debug-Bild)
+       - Falsch gezeichnete Bounding Boxes (zu groß, zu klein, falsche Position)
+       - Halluzinierte Elemente (Bounding Boxes im Debug-Bild, aber keine Komponente im Original)
+       - Fehlende Verbindungen (Linien im Original, aber nicht im Debug-Bild)
+       - Falsche Verbindungen (Linien im Debug-Bild, aber nicht im Original)
+    3. **Generiere** Korrekturen als JSON
+
+    **RETURN FORMAT (STRICT JSON):**
+    {{
+      "visual_errors": [
+        {{
+          "type": "missing_element",
+          "element_id": "P-201",
+          "reason": "Element P-201 ist im Originalbild sichtbar, aber nicht im Debug-Bild",
+          "suggested_bbox": {{"x": 0.1, "y": 0.2, "width": 0.05, "height": 0.04}}
+        }},
+        {{
+          "type": "hallucinated_element",
+          "element_id": "FT-11",
+          "reason": "Bounding Box für FT-11 im Debug-Bild, aber keine Komponente an dieser Position im Originalbild"
+        }},
+        {{
+          "type": "wrong_bbox",
+          "element_id": "V-01",
+          "reason": "Bounding Box zu groß, schließt Text-Label ein",
+          "current_bbox": {{"x": 0.3, "y": 0.4, "width": 0.1, "height": 0.1}},
+          "corrected_bbox": {{"x": 0.32, "y": 0.42, "width": 0.05, "height": 0.05}}
+        }}
+      ],
+      "corrections": [
+        {{
+          "action": "add_element",
+          "element": {{
+            "id": "P-201",
+            "type": "Pump",
+            "label": "Pump P-201",
+            "bbox": {{"x": 0.1, "y": 0.2, "width": 0.05, "height": 0.04}},
+            "confidence": 0.9
+          }}
+        }},
+        {{
+          "action": "remove_element",
+          "element_id": "FT-11",
+          "reason": "Halluzination: Keine Komponente an dieser Position"
+        }},
+        {{
+          "action": "resize_bbox",
+          "element_id": "V-01",
+          "new_bbox": {{"x": 0.32, "y": 0.42, "width": 0.05, "height": 0.05}},
+          "reason": "BBox zu groß, schließt Text ein"
+        }}
+      ],
+      "validation_score": 75.0
+    }}
+
+    **CRITICAL:** Nur Korrekturen vorschlagen, wenn du dir visuell sicher bist. Wenn du unsicher bist, lasse das Element/Verbindung unverändert.

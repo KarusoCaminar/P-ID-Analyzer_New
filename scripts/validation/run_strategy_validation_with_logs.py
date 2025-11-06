@@ -19,7 +19,7 @@ if __name__ == "__main__":
     # Prüfe GCP-Credentials
     if not os.getenv("GCP_PROJECT_ID"):
         print("=" * 60)
-        print("⚠️  GCP_PROJECT_ID nicht gesetzt!")
+        print("[WARNING] GCP_PROJECT_ID nicht gesetzt!")
         print("=" * 60)
         print("\nBitte setzen Sie die Umgebungsvariablen:")
         print("  Windows PowerShell:")
@@ -36,7 +36,7 @@ if __name__ == "__main__":
     
     # Führe Tests aus (Logs werden automatisch angezeigt)
     print("=" * 60)
-    print("🚀 Strategy Validation Tests - Live Logs")
+    print("[START] Strategy Validation Tests - Live Logs")
     print("=" * 60)
     print("\nLogs werden live angezeigt...\n")
     

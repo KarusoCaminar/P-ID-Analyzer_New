@@ -18,8 +18,10 @@ from src.analyzer.ai.llm_client import LLMClient
 from src.analyzer.learning.knowledge_manager import KnowledgeManager
 from src.services.config_service import ConfigService
 from src.services.logging_service import LoggingService
+from src.utils.env_loader import load_env_automatically
 
-load_dotenv()
+# Load .env file automatically (centralized approach)
+load_env_automatically()
 
 logger = logging.getLogger(__name__)
 
@@ -85,10 +87,15 @@ def main():
     
     # Check environment variables
     gcp_project_id = os.getenv("GCP_PROJECT_ID")
+    # If GCP_PROJECT_ID is missing, fall back to a local dummy LLM client so the pipeline
+    # can run for offline testing and development without exiting.
+    use_dummy_llm = False
     if not gcp_project_id:
-        logger.error("GCP_PROJECT_ID environment variable not set.")
-        sys.exit(1)
-    
+        logger.warning(
+            "GCP_PROJECT_ID environment variable not set. Falling back to Dummy LLM client for local runs."
+        )
+        use_dummy_llm = True
+
     gcp_location = os.getenv("GCP_LOCATION", "us-central1")
     
     # Initialize services
@@ -118,12 +125,22 @@ def main():
         else:
             config_dict = config_service.get_raw_config()
         
-        # Initialize LLM client
-        llm_client = LLMClient(
-            project_id=gcp_project_id,
-            default_location=gcp_location,
-            config=config_dict
-        )
+        # Initialize LLM client (use a dummy offline client if GCP not configured)
+        if use_dummy_llm:
+            # Import DummyLLMClient lazily to avoid importing vertexai or requiring credentials
+            from src.analyzer.ai.llm_client import DummyLLMClient
+            llm_client = DummyLLMClient(project_id="local", default_location=gcp_location, config=config_dict)
+        else:
+            # CRITICAL FIX: Ensure gcp_project_id is not None before passing to LLMClient
+            if not gcp_project_id:
+                logger.error("GCP_PROJECT_ID is required but not set. Cannot initialize LLMClient.")
+                sys.exit(1)
+            from src.analyzer.ai.llm_client import LLMClient
+            llm_client = LLMClient(
+                project_id=gcp_project_id,
+                default_location=gcp_location,
+                config=config_dict
+            )
         
         # Initialize knowledge manager
         knowledge_manager = KnowledgeManager(

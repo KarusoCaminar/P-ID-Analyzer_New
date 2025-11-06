@@ -189,14 +189,36 @@ def write_debug_file(
     }
     
     # Atomic write: write to temp file first, then rename
-    temp_path = output_path.with_suffix('.tmp')
+    # CRITICAL FIX: Add unique suffix to prevent conflicts when multiple processes write simultaneously
+    import uuid
+    temp_path = output_path.parent / f"{output_path.stem}_{uuid.uuid4().hex[:8]}.tmp"
     
     try:
+        # CRITICAL FIX: Check if file is locked before writing
+        if temp_path.exists():
+            try:
+                temp_path.unlink()  # Remove old temp file
+            except PermissionError:
+                # File is locked, use different name
+                temp_path = output_path.parent / f"{output_path.stem}_{uuid.uuid4().hex[:8]}.tmp"
+        
         with open(temp_path, 'w', encoding='utf-8') as f:
             json.dump(debug_data, f, indent=2, ensure_ascii=False)
         
-        # Atomic rename
-        temp_path.replace(output_path)
+        # Atomic rename with retry
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                temp_path.replace(output_path)
+                break
+            except PermissionError:
+                if attempt < max_retries - 1:
+                    import time
+                    time.sleep(0.1)
+                else:
+                    # If rename fails, keep temp file with unique name
+                    logger.warning(f"Could not rename temp file, keeping as {temp_path}")
+                    return temp_path
         
         logger.debug(f"Written debug file to {output_path}")
     except Exception as e:

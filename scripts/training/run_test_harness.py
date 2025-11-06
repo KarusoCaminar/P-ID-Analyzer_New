@@ -273,7 +273,7 @@ def main():
     # Summary
     logger.info("=== Test Harness Summary ===")
     for result in results:
-        status = "✅ SUCCESS" if result.get("success") else "❌ FAILED"
+        status = "[OK] SUCCESS" if result.get("success") else "[ERROR] FAILED"
         logger.info(f"{status}: {result.get('test_name')}")
         if result.get("output_dir"):
             logger.info(f"  Output: {result.get('output_dir')}")

@@ -37,6 +37,8 @@ env/
 .pni_analyzer_cache/
 temp_tiles/
 temp_symbols_for_embeddings/
+# Temporäre Snippets aus der Self-Correction Loop
+correction_snippet_*.png
 outputs/
 *.log
 *.lock

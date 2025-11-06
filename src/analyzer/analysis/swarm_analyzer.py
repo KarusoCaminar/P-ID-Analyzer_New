@@ -421,11 +421,12 @@ class SwarmAnalyzer(IAnalyzer):
             confidence = el.get('confidence', 0.5)
             bbox = el.get('bbox')
             if confidence < low_confidence_threshold and bbox:
+                # CRITICAL FIX: Convert to float before arithmetic operations
                 zone = {
-                    'x': max(0.0, bbox.get('x', 0) - 0.05),
-                    'y': max(0.0, bbox.get('y', 0) - 0.05),
-                    'width': min(1.0 - bbox.get('x', 0), bbox.get('width', 0) + 0.1),
-                    'height': min(1.0 - bbox.get('y', 0), bbox.get('height', 0) + 0.1)
+                    'x': max(0.0, float(bbox.get('x', 0)) - 0.05),
+                    'y': max(0.0, float(bbox.get('y', 0)) - 0.05),
+                    'width': min(1.0 - float(bbox.get('x', 0)), float(bbox.get('width', 0)) + 0.1),
+                    'height': min(1.0 - float(bbox.get('y', 0)), float(bbox.get('height', 0)) + 0.1)
                 }
                 uncertain_zones.append(zone)
         
@@ -789,10 +790,10 @@ class SwarmAnalyzer(IAnalyzer):
         
         # Process tiles with controlled concurrency to limit API overload
         max_workers = self.logic_parameters.get('llm_executor_workers', 4)
-        timeout = self.logic_parameters.get('llm_default_timeout', 120)
+        timeout = self.logic_parameters.get('llm_default_timeout', 300)  # Erhöht von 120 auf 300
         
-        # Limit max_workers to prevent API overload (max 8 concurrent requests)
-        max_workers = min(max_workers, 8)
+        # Limit max_workers to prevent API overload (max 6 concurrent requests für Stabilität)
+        max_workers = min(max_workers, 6)  # Reduziert von 8 auf 6 für bessere Stabilität
         
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             future_to_tile = {}

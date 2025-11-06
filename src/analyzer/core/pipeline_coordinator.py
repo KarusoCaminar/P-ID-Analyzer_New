@@ -143,8 +143,19 @@ class PipelineCoordinator(IProcessor):
         
         # Active learning system
         from src.analyzer.learning.symbol_library import SymbolLibrary
-        symbol_library = SymbolLibrary(llm_client)
         config_dict = config_service.get_config().model_dump() if hasattr(config_service.get_config(), 'model_dump') else {}
+        
+        # Get paths from config
+        learning_db_path = Path(config_dict.get('paths', {}).get('learning_db', 'learning_db.json'))
+        learned_symbols_images_dir = Path(config_dict.get('paths', {}).get('learned_symbols_images_dir', 'learned_symbols_images'))
+        
+        # Initialize symbol library with images directory for viewshots
+        symbol_library = SymbolLibrary(
+            llm_client=llm_client,
+            learning_db_path=learning_db_path,
+            images_dir=learned_symbols_images_dir
+        )
+        
         self.active_learner = ActiveLearner(
             knowledge_manager=knowledge_manager,
             symbol_library=symbol_library,
@@ -225,131 +236,216 @@ class PipelineCoordinator(IProcessor):
             use_swarm = self.active_logic_parameters.get('use_swarm_analysis', True)
             use_monolith = self.active_logic_parameters.get('use_monolith_analysis', True)
 
+            # CRITICAL FIX: Allow Phase 1-only runs (Test 1) - skip Phase 2 and go directly to Phase 4
             if not use_swarm and not use_monolith:
-                logger.error("Both swarm and monolith analysis are disabled. Cannot proceed.")
-                return self._create_error_result("Both analyzers are disabled.")
-
-            # --- KORREKTUR: Respektiere use_swarm und use_monolith Flags für Test 2 und 3 ---
-            # WICHTIG: Prüfe die Flags ZUERST, unabhängig von der Phase-0-Strategie
-            if use_monolith and not use_swarm:
-                # --- ECHTER "SIMPLE P&ID" MODUS (TEST 2: Monolith-All) ---
-                self._update_progress(15, "Phase 2: Simple P&ID analysis (Monolith-All)")
-                logger.info("CRITICAL: Simple P&ID mode (Test 2) - Running MONOLITH ONLY.")
-                
-                # Rufe Monolith direkt auf (nicht parallel)
-                from src.analyzer.analysis import MonolithAnalyzer
-                monolith_analyzer = MonolithAnalyzer(
-                    self.llm_client,
-                    self.knowledge_manager,
-                    self.config_service,
-                    self.model_strategy,
-                    self.active_logic_parameters
-                )
-                
-                # Prepare legend context
-                legend_context = {
-                    'symbol_map': self._global_knowledge_repo.get('symbol_map', {}),
-                    'line_map': self._global_knowledge_repo.get('line_map', {})
+                logger.warning("Both swarm and monolith analysis are disabled. Skipping Phase 2 (Core Analysis).")
+                logger.info("Phase 1-only mode: Proceeding directly to Phase 4 (Post-processing) with Phase 1 results only.")
+                # Set empty analysis results for Phase 1-only mode
+                self._analysis_results = {
+                    "elements": [],
+                    "connections": [],
+                    "legend_data": self._global_knowledge_repo.get('legend_data', {}),
+                    "metadata": self._global_knowledge_repo.get('metadata', {})
                 }
-                monolith_analyzer.legend_context = legend_context
-                
-                # CRITICAL: Setze element_list_json auf leere Liste für Simple P&ID Mode
-                monolith_analyzer.element_list_json = "[]"
-                
-                monolith_result = monolith_analyzer.analyze(image_path, Path(final_output_dir), self._excluded_zones)
-                
-                # Swarm wird übersprungen
-                swarm_result = {"elements": [], "connections": []}
-                
-            elif use_swarm and not use_monolith:
-                # --- ECHTER "SWARM ONLY" MODUS (TEST 3) ---
-                self._update_progress(15, "Phase 2: Swarm-Only analysis")
-                logger.info("CRITICAL: Swarm-Only mode (Test 3) - Running SWARM ONLY.")
-                
-                from src.analyzer.analysis import SwarmAnalyzer
-                swarm_analyzer = SwarmAnalyzer(
-                    self.llm_client,
-                    self.knowledge_manager,
-                    self.config_service,
-                    self.model_strategy,
-                    self.active_logic_parameters
-                )
-                
-                # Prepare legend context
-                legend_context = {
-                    'symbol_map': self._global_knowledge_repo.get('symbol_map', {}),
-                    'line_map': self._global_knowledge_repo.get('line_map', {})
-                }
-                swarm_analyzer.legend_context = legend_context
-                
-                swarm_result = swarm_analyzer.analyze(image_path, Path(final_output_dir), self._excluded_zones)
-                
-                # Monolith wird übersprungen
-                monolith_result = {"elements": [], "connections": []}
-                
+                # Skip Phase 2 entirely - jump directly to Phase 3 (which will skip) and Phase 4
+                # This allows Phase 1 results (legend, metadata) to be saved
+                swarm_result = None
+                monolith_result = None
             else:
-                # --- STANDARD-MODUS (TEST 4, 5a, 5b, 5c) ---
-                # Complex P&IDs: Parallel analysis (Swarm + Monolith)
-                self._update_progress(15, "Phase 2: Parallel core analysis (Swarm + Monolith)...")
-                swarm_result, monolith_result = self._run_phase_2_parallel_analysis(
-                    image_path, final_output_dir
-                )
-            # --- ENDE KORREKTUR ---
-            
-            # Validate and correct coordinates (if validator exists)
-            try:
-                from src.utils.coordinate_validator import CoordinateValidator
-                from PIL import Image
-                with Image.open(image_path) as img:
-                    img_width, img_height = img.size
-                validator = CoordinateValidator(image_width=img_width, image_height=img_height)
-                
-                # Validate swarm elements
-                if swarm_result and swarm_result.get("elements"):
-                    validated_elements = []
-                    for el in swarm_result.get("elements", []):
-                        validated_el = validator.validate_element_coordinates(el)
-                        if validated_el:
-                            validated_elements.append(validated_el)
-                    if validated_elements:
-                        swarm_result["elements"] = validated_elements
-                
-                # Validate monolith elements
-                if monolith_result and monolith_result.get("elements"):
-                    validated_elements = []
-                    for el in monolith_result.get("elements", []):
-                        validated_el = validator.validate_element_coordinates(el)
-                        if validated_el:
-                            validated_elements.append(validated_el)
-                    if validated_elements:
-                        monolith_result["elements"] = validated_elements
-            except ImportError:
-                logger.warning("CoordinateValidator not available, skipping coordinate validation")
-            except Exception as e:
-                logger.warning(f"Coordinate validation failed: {e}")
-            
-            if not swarm_result or not swarm_result.get("elements"):
-                logger.error("Initial analysis failed.")
-                return self._create_error_result("Initial analysis failed.")
-            
-            # Phase 2c: Fusion
-            self._update_progress(45, "Phase 2c: Fusion...")
-            
-            # --- KORREKTUR: Respektiere das 'use_fusion' Flag ---
-            if not self.active_logic_parameters.get('use_fusion', True):
-                logger.warning("SKIPPING Phase 2c: Fusion (use_fusion=False)")
-                # Wenn Fusion übersprungen wird (wie in Test 3),
-                # nimm einfach das Swarm-Ergebnis als Basis.
-                if swarm_result:
-                    self._analysis_results = swarm_result
+                # --- KORREKTUR: Respektiere use_swarm und use_monolith Flags für Test 2 und 3 ---
+                # WICHTIG: Prüfe die Flags ZUERST, unabhängig von der Phase-0-Strategie
+                if use_monolith and not use_swarm:
+                    # --- ECHTER "SIMPLE P&ID" MODUS (TEST 2: Monolith-All) ---
+                    self._update_progress(15, "Phase 2: Simple P&ID analysis (Monolith-All)")
+                    logger.info("CRITICAL: Simple P&ID mode (Test 2) - Running MONOLITH ONLY.")
+                    
+                    # Rufe Monolith direkt auf (nicht parallel)
+                    from src.analyzer.analysis import MonolithAnalyzer
+                    monolith_analyzer = MonolithAnalyzer(
+                        self.llm_client,
+                        self.knowledge_manager,
+                        self.config_service,
+                        self.model_strategy,
+                        self.active_logic_parameters
+                    )
+                    
+                    # Prepare legend context (only if legend is present)
+                    legend_data = self._analysis_results.get('legend_data', {})
+                    has_legend = legend_data.get('has_legend', False)
+                    
+                    if has_legend:
+                        legend_context = {
+                            'symbol_map': self._global_knowledge_repo.get('symbol_map', {}),
+                            'line_map': self._global_knowledge_repo.get('line_map', {})
+                        }
+                        monolith_analyzer.legend_context = legend_context
+                    else:
+                        # No legend - disable legend context
+                        logger.info("No legend present - disabling legend context for Monolith")
+                        monolith_analyzer.legend_context = None
+                    
+                    # CRITICAL: For Simple P&ID Mode (Monolith-Only), Monolith must recognize elements AND connections
+                    # This is the ONLY case where Monolith runs without element_list_json
+                    monolith_analyzer.element_list_json = "[]"
+                    logger.info("Simple P&ID Mode: Monolith will recognize elements AND connections independently (no element_list_json)")
+                    
+                    monolith_result = monolith_analyzer.analyze(image_path, Path(final_output_dir), self._excluded_zones)
+                    
+                    # Swarm wird übersprungen
+                    swarm_result = {"elements": [], "connections": []}
+                    
+                elif use_swarm and not use_monolith:
+                    # --- ECHTER "SWARM ONLY" MODUS (TEST 3) ---
+                    self._update_progress(15, "Phase 2: Swarm-Only analysis")
+                    logger.info("CRITICAL: Swarm-Only mode (Test 3) - Running SWARM ONLY.")
+                    
+                    from src.analyzer.analysis import SwarmAnalyzer
+                    swarm_analyzer = SwarmAnalyzer(
+                        self.llm_client,
+                        self.knowledge_manager,
+                        self.config_service,
+                        self.model_strategy,
+                        self.active_logic_parameters
+                    )
+                    
+                    # Prepare legend context (only if legend is present)
+                    legend_data = self._analysis_results.get('legend_data', {})
+                    has_legend = legend_data.get('has_legend', False)
+                    
+                    if has_legend:
+                        legend_context = {
+                            'symbol_map': self._global_knowledge_repo.get('symbol_map', {}),
+                            'line_map': self._global_knowledge_repo.get('line_map', {})
+                        }
+                        swarm_analyzer.legend_context = legend_context
+                    else:
+                        # No legend - disable legend context
+                        logger.info("No legend present - disabling legend context for Swarm")
+                        swarm_analyzer.legend_context = None
+                    
+                    swarm_result = swarm_analyzer.analyze(image_path, Path(final_output_dir), self._excluded_zones)
+                    
+                    # Monolith wird übersprungen
+                    monolith_result = {"elements": [], "connections": []}
+                    
                 else:
-                    logger.error("Fusion skipped, but Swarm result is also empty. Cannot proceed.")
-                    return self._create_error_result("Swarm analysis failed and fusion was skipped.")
-            else:
-                # Führe die Fusion nur aus, wenn sie aktiviert ist
-                fused_result = self._run_phase_2c_fusion(swarm_result, monolith_result)
-                self._analysis_results = fused_result
+                    # --- STANDARD-MODUS (TEST 4, 5a, 5b, 5c) ---
+                    # Complex P&IDs: Parallel analysis (Swarm + Monolith)
+                    self._update_progress(15, "Phase 2: Parallel core analysis (Swarm + Monolith)...")
+                    swarm_result, monolith_result = self._run_phase_2_parallel_analysis(
+                        image_path, final_output_dir
+                    )
             # --- ENDE KORREKTUR ---
+            
+            # CRITICAL: Skip validation and fusion if both are disabled (Phase 1-only mode)
+            use_swarm = self.active_logic_parameters.get('use_swarm_analysis', True)
+            use_monolith = self.active_logic_parameters.get('use_monolith_analysis', True)
+            
+            if not use_swarm and not use_monolith:
+                # Phase 1-only mode: Skip validation and fusion, go directly to Phase 3/4
+                logger.info("Phase 1-only mode: Skipping validation and fusion, proceeding to Phase 3/4")
+            else:
+                # Validate and correct coordinates (if validator exists)
+                try:
+                    from src.utils.coordinate_validator import CoordinateValidator
+                    from PIL import Image
+                    with Image.open(image_path) as img:
+                        img_width, img_height = img.size
+                    validator = CoordinateValidator(image_width=img_width, image_height=img_height)
+                    
+                    # Validate swarm elements
+                    if swarm_result and swarm_result.get("elements"):
+                        validated_elements = []
+                        for el in swarm_result.get("elements", []):
+                            validated_el = validator.validate_element_coordinates(el)
+                            if validated_el:
+                                validated_elements.append(validated_el)
+                        if validated_elements:
+                            swarm_result["elements"] = validated_elements
+                    
+                    # Validate monolith elements
+                    if monolith_result and monolith_result.get("elements"):
+                        validated_elements = []
+                        for el in monolith_result.get("elements", []):
+                            validated_el = validator.validate_element_coordinates(el)
+                            if validated_el:
+                                validated_elements.append(validated_el)
+                        if validated_elements:
+                            monolith_result["elements"] = validated_elements
+                except ImportError:
+                    logger.warning("CoordinateValidator not available, skipping coordinate validation")
+                except Exception as e:
+                    logger.warning(f"Coordinate validation failed: {e}")
+                
+                # CRITICAL: Validate results based on mode (not always swarm_result)
+                # DEBUG: Log results for debugging
+                logger.debug(f"Validation: use_swarm={use_swarm}, use_monolith={use_monolith}")
+                logger.debug(f"Validation: monolith_result type={type(monolith_result)}, keys={monolith_result.keys() if isinstance(monolith_result, dict) else 'N/A'}")
+                logger.debug(f"Validation: monolith_result elements count={len(monolith_result.get('elements', [])) if isinstance(monolith_result, dict) else 0}")
+                logger.debug(f"Validation: swarm_result type={type(swarm_result)}, keys={swarm_result.keys() if isinstance(swarm_result, dict) else 'N/A'}")
+                logger.debug(f"Validation: swarm_result elements count={len(swarm_result.get('elements', [])) if isinstance(swarm_result, dict) else 0}")
+                
+                # Check if we have at least one valid result based on mode
+                if use_monolith and not use_swarm:
+                    # Monolith-Only mode: Check monolith_result
+                    if not monolith_result or not isinstance(monolith_result, dict) or not monolith_result.get("elements"):
+                        logger.error(f"Initial analysis failed (Monolith-Only mode). monolith_result={monolith_result}")
+                        return self._create_error_result("Monolith analysis failed.")
+                elif use_swarm and not use_monolith:
+                    # Swarm-Only mode: Check swarm_result
+                    if not swarm_result or not swarm_result.get("elements"):
+                        logger.error("Initial analysis failed (Swarm-Only mode).")
+                        return self._create_error_result("Swarm analysis failed.")
+                else:
+                    # Parallel mode: Check both results (at least one must succeed)
+                    if (not swarm_result or not swarm_result.get("elements")) and (not monolith_result or not monolith_result.get("elements")):
+                        logger.error("Initial analysis failed (both analyzers failed).")
+                        return self._create_error_result("Both analyzers failed.")
+                
+                # Phase 2c: Fusion
+                self._update_progress(45, "Phase 2c: Fusion...")
+                
+                # --- KORREKTUR: Logik-Fehler in Test 2 und 3 beheben ---
+                # Get flags from active_logic_parameters
+                use_fusion = self.active_logic_parameters.get('use_fusion', True)
+                
+                # Test 2: (Simple P&ID) - Monolith only, no swarm, no fusion
+                # CRITICAL: Check flags FIRST, not strategy (strategy might be set by Phase 0, but flags override)
+                if use_monolith and not use_swarm:
+                    logger.info("SKIPPING Phase 2c: Fusion (Simple P&ID Mode / Monolith-Only). Using Monolith result.")
+                    if monolith_result and monolith_result.get("elements"):
+                        self._analysis_results = monolith_result
+                        logger.info(f"Simple P&ID mode: Using Monolith result with {len(monolith_result.get('elements', []))} elements")
+                    else:
+                        logger.error("Simple P&ID mode failed: Monolith result is empty.")
+                        return self._create_error_result("Monolith analysis failed in Simple P&ID mode.")
+                
+                # Test 3: (Swarm Only) - Swarm only, no monolith, no fusion
+                elif use_swarm and not use_monolith:
+                    logger.info("SKIPPING Phase 2c: Fusion (Swarm Only Mode). Using Swarm result.")
+                    if swarm_result and swarm_result.get("elements"):
+                        self._analysis_results = swarm_result
+                        logger.info(f"Swarm Only mode: Using Swarm result with {len(swarm_result.get('elements', []))} elements")
+                    else:
+                        logger.error("Swarm Only mode failed: Swarm result is empty.")
+                        return self._create_error_result("Swarm analysis failed in Swarm Only mode.")
+                
+                # Test 4, 5a, 5b, 5c: (Complex/Parallel) - Fusion ist AN
+                elif use_fusion:
+                    logger.info("Running Phase 2c: Confidence-Based Fusion Engine...")
+                    fused_result = self._run_phase_2c_fusion(swarm_result, monolith_result)
+                    self._analysis_results = fused_result
+                
+                else:
+                    # Fallback (sollte nicht passieren, wenn Test-Harness korrekt konfiguriert ist)
+                    logger.warning("SKIPPING Phase 2c: Fusion (use_fusion=False). Defaulting to Swarm result.")
+                    if swarm_result:
+                        self._analysis_results = swarm_result
+                    elif monolith_result:
+                        self._analysis_results = monolith_result
+                    else:
+                        self._analysis_results = {"elements": [], "connections": []}
+                # --- ENDE KORREKTUR ---
             
             # CRITICAL: Check for missing legend symbols and add them if found by Monolith
             # If legend is present, ensure all legend symbols are detected
@@ -487,10 +583,17 @@ class PipelineCoordinator(IProcessor):
         logger.info(f"Progress: {progress}% - {message}")
     
     def _get_output_directory(self, image_path: str) -> str:
-        """Get output directory for results."""
+        """
+        Get output directory for results.
+        
+        ALWAYS saves to outputs/ directory, regardless of where the script is started.
+        Creates a subdirectory based on image name and timestamp.
+        """
         base_name = Path(image_path).stem
         timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-        output_dir = Path("outputs") / f"{base_name}_output_{timestamp}"
+        # Always use outputs/ directory relative to project root
+        project_root = Path(__file__).parent.parent.parent.parent
+        output_dir = project_root / "outputs" / "analyses" / f"{base_name}_{timestamp}"
         output_dir.mkdir(parents=True, exist_ok=True)
         return str(output_dir)
     
@@ -698,7 +801,53 @@ class PipelineCoordinator(IProcessor):
             img_width, img_height = 1000, 1000  # Fallback
         
         parsed_metadata_bbox = self._parse_bbox(raw_metadata_bbox)
+        
+        # --- NEU: Iterative BBox-Verfeinerung für Metadata ---
         if parsed_metadata_bbox:
+            # Check if iterative refinement is enabled
+            use_bbox_refinement = self.active_logic_parameters.get('use_legend_bbox_refinement', True)
+            
+            if use_bbox_refinement:
+                logger.info("Starting iterative metadata bbox refinement...")
+                try:
+                    from src.utils.bbox_refiner import refine_metadata_bbox_iteratively
+                    
+                    # Get refinement model (use meta_model for metadata refinement)
+                    refinement_model = self.model_strategy.get('meta_model') or self.model_strategy.get('detail_model')
+                    if refinement_model:
+                        # Normalize model info
+                        if isinstance(refinement_model, dict):
+                            refinement_model_info = refinement_model
+                        elif hasattr(refinement_model, 'model_dump'):
+                            refinement_model_info = refinement_model.model_dump()
+                        elif hasattr(refinement_model, 'dict'):
+                            refinement_model_info = refinement_model.dict()
+                        else:
+                            refinement_model_info = None
+                        
+                        if refinement_model_info:
+                            # Refine bbox iteratively
+                            refined_bbox = refine_metadata_bbox_iteratively(
+                                image_path=image_path,
+                                initial_bbox=parsed_metadata_bbox,
+                                llm_client=self.llm_client,
+                                model_info=refinement_model_info,
+                                system_prompt=system_prompt,
+                                max_iterations=3,
+                                min_reduction=0.05
+                            )
+                            
+                            # Update parsed_metadata_bbox with refined version
+                            parsed_metadata_bbox = refined_bbox
+                            logger.info(f"Metadata bbox refined: {parsed_metadata_bbox}")
+                        else:
+                            logger.warning("Could not normalize refinement model. Using original bbox.")
+                    else:
+                        logger.warning("No refinement model available. Using original bbox.")
+                except Exception as e:
+                    logger.warning(f"Error in metadata bbox refinement: {e}. Using original bbox.", exc_info=True)
+            # --- ENDE Metadata BBox-Verfeinerung ---
+            
             self._excluded_zones.append(parsed_metadata_bbox)
             self.state.excluded_zones.append(parsed_metadata_bbox)
             logger.info(f"Identified metadata area to be excluded: {parsed_metadata_bbox}")
@@ -725,7 +874,52 @@ class PipelineCoordinator(IProcessor):
         legend_bbox_raw = legend_dict.get("legend_bbox") if legend_dict else None
         parsed_legend_bbox = self._parse_bbox(legend_bbox_raw)
         
+        # --- NEU: Iterative BBox-Verfeinerung für Legende ---
         if parsed_legend_bbox:
+            # Check if iterative refinement is enabled
+            use_bbox_refinement = self.active_logic_parameters.get('use_legend_bbox_refinement', True)
+            
+            if use_bbox_refinement:
+                logger.info("Starting iterative legend bbox refinement...")
+                try:
+                    from src.utils.bbox_refiner import refine_legend_bbox_iteratively
+                    
+                    # Get refinement model (use meta_model for legend refinement)
+                    refinement_model = self.model_strategy.get('meta_model') or self.model_strategy.get('detail_model')
+                    if refinement_model:
+                        # Normalize model info
+                        if isinstance(refinement_model, dict):
+                            refinement_model_info = refinement_model
+                        elif hasattr(refinement_model, 'model_dump'):
+                            refinement_model_info = refinement_model.model_dump()
+                        elif hasattr(refinement_model, 'dict'):
+                            refinement_model_info = refinement_model.dict()
+                        else:
+                            refinement_model_info = None
+                        
+                        if refinement_model_info:
+                            # Refine bbox iteratively
+                            refined_bbox = refine_legend_bbox_iteratively(
+                                image_path=image_path,
+                                initial_bbox=parsed_legend_bbox,
+                                llm_client=self.llm_client,
+                                model_info=refinement_model_info,
+                                system_prompt=system_prompt,
+                                max_iterations=3,
+                                min_reduction=0.05
+                            )
+                            
+                            # Update parsed_legend_bbox with refined version
+                            parsed_legend_bbox = refined_bbox
+                            logger.info(f"Legend bbox refined: {parsed_legend_bbox}")
+                        else:
+                            logger.warning("Could not normalize refinement model. Using original bbox.")
+                    else:
+                        logger.warning("No refinement model available. Using original bbox.")
+                except Exception as e:
+                    logger.warning(f"Error in bbox refinement: {e}. Using original bbox.", exc_info=True)
+            # --- ENDE BBox-Verfeinerung ---
+            
             self._excluded_zones.append(parsed_legend_bbox)
             self.state.excluded_zones.append(parsed_legend_bbox)
             logger.info(f"Identified legend area to be excluded: {parsed_legend_bbox}")
@@ -735,33 +929,48 @@ class PipelineCoordinator(IProcessor):
         # Validate symbol map
         symbol_map = legend_dict.get("symbol_map", {}) if legend_dict else {}
         validated_symbol_map = self._validate_symbol_map(symbol_map)
-        self._global_knowledge_repo['symbol_map'] = validated_symbol_map
         
         # Process line map
         line_map = legend_dict.get("line_map", {}) if legend_dict else {}
-        if line_map:
-            self._global_knowledge_repo['line_map'] = line_map
         
-        # CRITICAL: Legend Critic - Plausibility Check (Step 1.2)
-        legend_confidence = 0.0
-        is_plausible = False
-        if validated_symbol_map or line_map:
-            logger.info("Running Legend Critic (Plausibility Check)...")
-            critic_result = self._run_legend_critic(validated_symbol_map, line_map)
-            is_plausible = critic_result.get('is_plausible', False)
-            legend_confidence = critic_result.get('confidence', 0.0)
-            reason = critic_result.get('reason', 'No reason provided')
+        # CRITICAL: Check if legend is actually present (not empty)
+        has_legend = bool(validated_symbol_map or line_map or parsed_legend_bbox)
+        
+        if not has_legend:
+            # No legend present - disable all legend logic
+            logger.info("No legend detected (no symbol_map, line_map, or bbox). Disabling all legend logic.")
+            validated_symbol_map = {}
+            line_map = {}
+            legend_confidence = 0.0
+            is_plausible = False
+            # Clear any legend bbox if it was incorrectly detected
+            parsed_legend_bbox = None
+        else:
+            # Legend is present - proceed with normal legend processing
+            self._global_knowledge_repo['symbol_map'] = validated_symbol_map
+            if line_map:
+                self._global_knowledge_repo['line_map'] = line_map
             
-            logger.info(f"Legend Critic Result: is_plausible={is_plausible}, confidence={legend_confidence:.2f}")
-            logger.info(f"Reason: {reason}")
-            
-            # Decision (Step 1.3)
-            if is_plausible and legend_confidence > 0.8:
-                logger.info("Legend is TRUSTED TRUTH (High Authority) - will be used with high priority")
-            elif is_plausible:
-                logger.info("Legend is PARTIAL TRUTH (Medium Authority) - will be used with medium priority")
-            else:
-                logger.warning("Legend is LOW CONFIDENCE (Low Authority) - will be used with low priority")
+            # CRITICAL: Legend Critic - Plausibility Check (Step 1.2)
+            legend_confidence = 0.0
+            is_plausible = False
+            if validated_symbol_map or line_map:
+                logger.info("Running Legend Critic (Plausibility Check)...")
+                critic_result = self._run_legend_critic(validated_symbol_map, line_map)
+                is_plausible = critic_result.get('is_plausible', False)
+                legend_confidence = critic_result.get('confidence', 0.0)
+                reason = critic_result.get('reason', 'No reason provided')
+                
+                logger.info(f"Legend Critic Result: is_plausible={is_plausible}, confidence={legend_confidence:.2f}")
+                logger.info(f"Reason: {reason}")
+                
+                # Decision (Step 1.3)
+                if is_plausible and legend_confidence > 0.8:
+                    logger.info("Legend is TRUSTED TRUTH (High Authority) - will be used with high priority")
+                elif is_plausible:
+                    logger.info("Legend is PARTIAL TRUTH (Medium Authority) - will be used with medium priority")
+                else:
+                    logger.warning("Legend is LOW CONFIDENCE (Low Authority) - will be used with low priority")
         
         # Store complete legend data for use in analysis and output
         complete_legend_data = {
@@ -769,7 +978,8 @@ class PipelineCoordinator(IProcessor):
             'line_map': line_map,
             'legend_bbox': parsed_legend_bbox,
             'legend_confidence': legend_confidence,
-            'is_plausible': is_plausible
+            'is_plausible': is_plausible,
+            'has_legend': has_legend  # Flag to indicate if legend is present
         }
         self.state.legend_data = complete_legend_data
         self._analysis_results['legend_data'] = complete_legend_data
@@ -779,9 +989,12 @@ class PipelineCoordinator(IProcessor):
             self._analysis_results['metadata'] = metadata_dict
             self.state.metadata = metadata_dict
         
-        logger.info(f"Built knowledge repository with {len(validated_symbol_map)} validated symbol mappings and {len(line_map)} line rules.")
-        if line_map:
-            logger.info(f"Extracted {len(line_map)} line semantic rules from legend (colors, styles).")
+        if has_legend:
+            logger.info(f"Built knowledge repository with {len(validated_symbol_map)} validated symbol mappings and {len(line_map)} line rules.")
+            if line_map:
+                logger.info(f"Extracted {len(line_map)} line semantic rules from legend (colors, styles).")
+        else:
+            logger.info("No legend detected - analysis will proceed without legend context (using Learning Database and Element Type List).")
         
         logger.info("Phase 1 completed. Legend knowledge ready for analysis.")
     
@@ -1020,11 +1233,23 @@ Be honest and strict in your evaluation."""
             self.active_logic_parameters
         )
         
-        # Prepare legend context for analyzers
-        legend_context = {
-            'symbol_map': self._global_knowledge_repo.get('symbol_map', {}),
-            'line_map': self._global_knowledge_repo.get('line_map', {})
-        }
+        # Prepare legend context for analyzers (only if legend is present)
+        legend_data = self._analysis_results.get('legend_data', {})
+        has_legend = legend_data.get('has_legend', False)
+        
+        if has_legend:
+            legend_context = {
+                'symbol_map': self._global_knowledge_repo.get('symbol_map', {}),
+                'line_map': self._global_knowledge_repo.get('line_map', {})
+            }
+            swarm_analyzer.legend_context = legend_context
+            monolith_analyzer.legend_context = legend_context
+            logger.info(f"Using legend context: {len(legend_context['symbol_map'])} symbols, {len(legend_context['line_map'])} line rules")
+        else:
+            # No legend - disable legend context
+            logger.info("No legend present - disabling legend context for analyzers")
+            swarm_analyzer.legend_context = None
+            monolith_analyzer.legend_context = None
         
         # Run in parallel
         swarm_graph: Dict[str, Any] = {}
@@ -1034,11 +1259,6 @@ Be honest and strict in your evaluation."""
         
         with ThreadPoolExecutor(max_workers=2) as executor:
             logger.info("Starting swarm (components) and monolith (structure) analysis in parallel...")
-            logger.info(f"Using legend context: {len(legend_context['symbol_map'])} symbols, {len(legend_context['line_map'])} line rules")
-            
-            # Store legend_context in analyzers for use in prompts
-            swarm_analyzer.legend_context = legend_context
-            monolith_analyzer.legend_context = legend_context
             
             swarm_future = executor.submit(
                 swarm_analyzer.analyze,
@@ -1047,17 +1267,32 @@ Be honest and strict in your evaluation."""
                 self._excluded_zones
             )
             
-            monolith_future = executor.submit(
-                monolith_analyzer.analyze,
-                image_path,
-                output_path,
-                self._excluded_zones
-            )
-            
+            # CRITICAL: Monolith must wait for Swarm to complete to get element_list_json
+            # We cannot run them truly in parallel if Monolith needs Swarm's element list
+            # For now, run Swarm first, then Monolith with element list
             try:
                 swarm_result = swarm_future.result()
                 if swarm_result:
                     swarm_graph = swarm_result
+                    
+                    # CRITICAL: Set element_list_json from Swarm result for Monolith
+                    swarm_elements = swarm_result.get('elements', [])
+                    if swarm_elements:
+                        import json
+                        element_list_json = json.dumps(swarm_elements, ensure_ascii=False)
+                        monolith_analyzer.element_list_json = element_list_json
+                        logger.info(f"Monolith will use element_list_json from Swarm: {len(swarm_elements)} elements")
+                    else:
+                        logger.warning("Swarm returned no elements - Monolith will run without element_list_json")
+                        monolith_analyzer.element_list_json = "[]"
+                
+                # Now run Monolith with element list from Swarm
+                monolith_future = executor.submit(
+                    monolith_analyzer.analyze,
+                    image_path,
+                    output_path,
+                    self._excluded_zones
+                )
                 
                 monolith_result = monolith_future.result()
                 if monolith_result:
@@ -1209,8 +1444,11 @@ Be honest and strict in your evaluation."""
         Uses geometric heuristics to add probable, missing connections between
         nearby, unconnected elements.
         """
+        # --- KORREKTUR: Respektiere use_predictive_completion Flag (Fix 3) ---
         if not self.active_logic_parameters.get('use_predictive_completion', True):
+            logger.warning("SKIPPING Phase 2d: Predictive Completion (Flag is False)")
             return
+        # --- ENDE KORREKTUR ---
         
         self._update_progress(58, "Phase 2d: Closing heuristic gaps...")
         
@@ -1252,10 +1490,13 @@ Be honest and strict in your evaluation."""
         For each found connection, creates a small, preprocessed image snippet
         and uses a specialized AI agent to find the exact line path (polyline).
         """
-        if not self.current_image_path:
-            return
-        
+        # --- KORREKTUR: Respektiere use_polyline_refinement Flag (Fix 3) ---
         if not self.active_logic_parameters.get('use_polyline_refinement', True):
+            logger.warning("SKIPPING Phase 2e: Polyline Refinement (Flag is False)")
+            return
+        # --- ENDE KORREKTUR ---
+        
+        if not self.current_image_path:
             return
         
         logger.info("--- Phase 2e: Starting high-precision polyline extraction ---")
@@ -1357,9 +1598,10 @@ Be honest and strict in your evaluation."""
                         for point in polyline_data:
                             if len(point) >= 2:
                                 # Convert from snippet local (0-1) to global image (0-1)
-                                local_x, local_y = point[0], point[1]
-                                global_x = (conn_bbox['x'] + local_x * conn_bbox['width']) / img_width
-                                global_y = (conn_bbox['y'] + local_y * conn_bbox['height']) / img_height
+                                # CRITICAL FIX: Convert to float before arithmetic operations
+                                local_x, local_y = float(point[0]), float(point[1])
+                                global_x = (float(conn_bbox.get('x', 0)) + local_x * float(conn_bbox.get('width', 0))) / float(img_width)
+                                global_y = (float(conn_bbox.get('y', 0)) + local_y * float(conn_bbox.get('height', 0))) / float(img_height)
                                 global_polyline.append([global_x, global_y])
                         
                         return {
@@ -1416,11 +1658,17 @@ Be honest and strict in your evaluation."""
         
         Iteratively validates and corrects analysis results based on feedback.
         """
-        logger.info("--- Phase 3: Starting self-correction loop ---")
+        # --- KORREKTUR: Respektiere use_self_correction_loop Flag (Fix 3) ---
+        if not self.active_logic_parameters.get('use_self_correction_loop', True):
+            logger.warning("SKIPPING Phase 3: Self-Correction Loop (Flag is False)")
+            # CRITICAL FIX: Wrap in expected structure for Phase 4
+            return {
+                "quality_score": 0.0,
+                "final_ai_data": copy.deepcopy(self._analysis_results) if self._analysis_results else {"elements": [], "connections": []}
+            }
+        # --- ENDE KORREKTUR ---
         
-        if not self.active_logic_parameters.get('use_self_correction', True):
-            logger.info("Self-correction disabled. Skipping Phase 3.")
-            return self._analysis_results
+        logger.info("--- Phase 3: Starting self-correction loop ---")
         
         max_iterations = self.active_logic_parameters.get('max_self_correction_iterations', 3)
         target_score = self.active_logic_parameters.get('target_quality_score', 98.0)
@@ -1461,6 +1709,27 @@ Be honest and strict in your evaluation."""
                 }
                 save_intermediate_result(f"phase_3_selfcorrect_ITER_{i+1}", iteration_result, self.current_output_dir)
             
+            # --- NEU: Visuelles Feedback für Self-Correction Loop ---
+            use_visual_feedback = self.active_logic_parameters.get('use_visual_feedback', True)
+            visual_corrections = {}
+            
+            if use_visual_feedback and i < max_iterations - 1:  # Don't use visual feedback on last iteration
+                logger.info("Generating visual feedback for self-correction...")
+                try:
+                    visual_corrections = self._run_visual_feedback_validation(
+                        image_path,
+                        output_dir,
+                        i
+                    )
+                    
+                    if visual_corrections and visual_corrections.get('corrections'):
+                        logger.info(f"Visual feedback: {len(visual_corrections.get('corrections', []))} visual corrections identified")
+                        # Apply visual corrections
+                        self._apply_visual_corrections(visual_corrections.get('corrections', []))
+                except Exception as e:
+                    logger.warning(f"Error in visual feedback validation: {e}. Continuing without visual corrections.", exc_info=True)
+            # --- ENDE Visuelles Feedback ---
+            
             # Early termination conditions
             if current_score >= target_score:
                 logger.info(f"Target quality score reached ({current_score:.2f} >= {target_score:.2f}). Stopping corrections.")
@@ -1487,6 +1756,166 @@ Be honest and strict in your evaluation."""
         
         logger.info(f"Self-correction complete. Best score: {best_result['quality_score']:.2f}")
         return best_result
+    
+    def _run_visual_feedback_validation(
+        self,
+        image_path: str,
+        output_dir: str,
+        iteration: int
+    ) -> Dict[str, Any]:
+        """
+        Run visual feedback validation using MultiModelCritic.
+        
+        Generates a debug map of current analysis and sends it to the critic
+        along with the original image for visual comparison.
+        
+        Args:
+            image_path: Path to original P&ID image
+            output_dir: Output directory for debug map
+            iteration: Current iteration number
+            
+        Returns:
+            Dictionary with visual corrections
+        """
+        logger.info("=== Visual Feedback Validation: Generating debug map ===")
+        
+        try:
+            from src.analyzer.visualization.visualizer import Visualizer
+            from src.analyzer.analysis.multi_model_critic import MultiModelCritic
+            from PIL import Image
+            from pathlib import Path
+            
+            # Get current analysis results
+            elements = self._analysis_results.get("elements", [])
+            connections = self._analysis_results.get("connections", [])
+            
+            if not elements:
+                logger.warning("No elements to visualize. Skipping visual feedback.")
+                return {'visual_errors': [], 'corrections': [], 'validation_score': 0.0}
+            
+            # Load image to get dimensions
+            img = Image.open(image_path)
+            img_width, img_height = img.size
+            
+            # Create visualizer
+            visualizer = Visualizer(img_width, img_height)
+            
+            # Generate debug map
+            output_path = Path(output_dir)
+            debug_map_path = output_path / f"debug_map_iteration_{iteration + 1}.png"
+            
+            success = visualizer.draw_debug_map(
+                image_path,
+                elements,
+                connections,
+                str(debug_map_path)
+            )
+            
+            if not success:
+                logger.warning("Failed to generate debug map. Skipping visual feedback.")
+                return {'visual_errors': [], 'corrections': [], 'validation_score': 0.0}
+            
+            logger.info(f"Debug map generated: {debug_map_path}")
+            
+            # Initialize MultiModelCritic
+            config = self.config_service.get_config()
+            config_dict = config.model_dump() if hasattr(config, 'model_dump') else config.__dict__
+            
+            critic = MultiModelCritic(
+                self.llm_client,
+                self.knowledge_manager,
+                config_dict
+            )
+            
+            # Prepare legend data
+            legend_data = {
+                'symbol_map': self._global_knowledge_repo.get('symbol_map', {}),
+                'line_map': self._global_knowledge_repo.get('line_map', {})
+            }
+            
+            # Run visual feedback validation
+            visual_result = critic.validate_with_visual_feedback(
+                elements=elements,
+                connections=connections,
+                original_image_path=image_path,
+                debug_map_path=str(debug_map_path),
+                legend_data=legend_data if legend_data.get('symbol_map') or legend_data.get('line_map') else None,
+                model_strategy=self.model_strategy
+            )
+            
+            logger.info(f"Visual feedback validation complete: {len(visual_result.get('corrections', []))} corrections")
+            
+            return visual_result
+            
+        except Exception as e:
+            logger.error(f"Error in visual feedback validation: {e}", exc_info=True)
+            return {'visual_errors': [], 'corrections': [], 'validation_score': 0.0}
+    
+    def _apply_visual_corrections(
+        self,
+        corrections: List[Dict[str, Any]]
+    ) -> None:
+        """
+        Apply visual corrections to current analysis results.
+        
+        Args:
+            corrections: List of corrections from visual feedback
+        """
+        if not corrections:
+            return
+        
+        logger.info(f"Applying {len(corrections)} visual corrections...")
+        
+        elements = self._analysis_results.get("elements", [])
+        connections = self._analysis_results.get("connections", [])
+        
+        for correction in corrections:
+            action = correction.get('action', '')
+            
+            if action == 'add_element':
+                # Add new element
+                new_element = correction.get('element')
+                if new_element:
+                    elements.append(new_element)
+                    logger.info(f"Visual correction: Added element {new_element.get('id')}")
+            
+            elif action == 'remove_element':
+                # Remove hallucinated element
+                element_id = correction.get('element_id')
+                if element_id:
+                    elements = [el for el in elements if el.get('id') != element_id]
+                    # Also remove connections to this element
+                    connections = [conn for conn in connections 
+                                  if conn.get('from_id') != element_id and conn.get('to_id') != element_id]
+                    logger.info(f"Visual correction: Removed element {element_id}")
+            
+            elif action == 'resize_bbox':
+                # Resize bounding box
+                element_id = correction.get('element_id')
+                new_bbox = correction.get('new_bbox')
+                if element_id and new_bbox:
+                    for el in elements:
+                        if el.get('id') == element_id:
+                            el['bbox'] = new_bbox
+                            logger.info(f"Visual correction: Resized bbox for element {element_id}")
+                            break
+            
+            elif action == 'update_confidence':
+                # Update confidence score
+                element_id = correction.get('element_id')
+                new_confidence = correction.get('new_confidence')
+                if element_id and new_confidence is not None:
+                    for el in elements:
+                        if el.get('id') == element_id:
+                            el['confidence'] = float(new_confidence)
+                            logger.info(f"Visual correction: Updated confidence for element {element_id} to {new_confidence}")
+                            break
+        
+        # Update analysis results
+        self._analysis_results['elements'] = elements
+        self._analysis_results['connections'] = connections
+        
+        logger.info(f"Visual corrections applied. New element count: {len(elements)}, connection count: {len(connections)}")
     
     def _run_phase_3_validation_and_critic(
         self,
@@ -1746,9 +2175,22 @@ Be honest and strict in your evaluation."""
         
         final_ai_data = best_result.get("final_ai_data", {})
         
-        if not isinstance(final_ai_data, dict) or not final_ai_data.get("elements"):
+        # CRITICAL: Allow Phase 1-only mode (empty elements but has legend/metadata)
+        use_swarm = self.active_logic_parameters.get('use_swarm_analysis', True)
+        use_monolith = self.active_logic_parameters.get('use_monolith_analysis', True)
+        is_phase1_only = not use_swarm and not use_monolith
+        
+        if not isinstance(final_ai_data, dict):
             logger.error("Post-processing aborted: No valid final data found.")
             return self._create_error_result("Post-processing failed: No valid data")
+        
+        # For Phase 1-only mode, allow empty elements (we're testing legend recognition)
+        if not is_phase1_only and not final_ai_data.get("elements"):
+            logger.error("Post-processing aborted: No valid final data found.")
+            return self._create_error_result("Post-processing failed: No valid data")
+        
+        if is_phase1_only:
+            logger.info("Phase 1-only mode: Proceeding with legend/metadata only (no elements expected)")
         
         # Calculate KPIs
         kpis = self._calculate_kpis(final_ai_data, truth_data)
@@ -1848,10 +2290,11 @@ Be honest and strict in your evaluation."""
                         continue  # Element is rejected, not repaired
                     
                     # BBox must be within bounds (0.0 - 1.0)
-                    bbox['x'] = max(0.0, min(1.0, bbox.get('x', 0.0)))
-                    bbox['y'] = max(0.0, min(1.0, bbox.get('y', 0.0)))
-                    bbox['width'] = max(0.001, min(1.0 - bbox['x'], bbox.get('width', 0.001)))
-                    bbox['height'] = max(0.001, min(1.0 - bbox['y'], bbox.get('height', 0.001)))
+                    # CRITICAL FIX: Convert to float before arithmetic operations
+                    bbox['x'] = max(0.0, min(1.0, float(bbox.get('x', 0.0))))
+                    bbox['y'] = max(0.0, min(1.0, float(bbox.get('y', 0.0))))
+                    bbox['width'] = max(0.001, min(1.0 - float(bbox.get('x', 0.0)), float(bbox.get('width', 0.001))))
+                    bbox['height'] = max(0.001, min(1.0 - float(bbox.get('y', 0.0)), float(bbox.get('height', 0.001))))
                     
                     # Create BBox Pydantic model
                     from src.analyzer.models.elements import BBox

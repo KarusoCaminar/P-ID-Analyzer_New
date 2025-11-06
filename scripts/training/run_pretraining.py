@@ -52,6 +52,21 @@ def main():
         pretraining_path = Path(config.get('paths', {}).get('pretraining_symbols', 'training_data/pretraining_symbols'))
         learning_db_path = Path(config.get('paths', {}).get('learning_db', 'learning_db.json'))
         
+        # KONSOLIDIERUNG: Auch Pid-symbols-PDF_sammlung.png für Pretraining nutzen
+        # Check if Pid-symbols-PDF_sammlung.png exists in pretraining_symbols
+        pdf_collection_path = pretraining_path / "Pid-symbols-PDF_sammlung.png"
+        if not pdf_collection_path.exists():
+            # Try alternative location
+            pdf_collection_path = Path("training_data/pretraining_symbols/Pid-symbols-PDF_sammlung.png")
+            if pdf_collection_path.exists():
+                logger.info(f"Found PDF collection at: {pdf_collection_path}")
+                # Copy or link to pretraining_path for processing
+                import shutil
+                target_path = pretraining_path / pdf_collection_path.name
+                if not target_path.exists():
+                    shutil.copy2(pdf_collection_path, target_path)
+                    logger.info(f"Copied PDF collection to pretraining path: {target_path}")
+        
         if not pretraining_path.exists():
             logger.error(f"Pretraining path not found: {pretraining_path}")
             logger.info(f"Please create directory: {pretraining_path}")
@@ -78,10 +93,12 @@ def main():
             config=config
         )
         
-        # Initialize symbol library
+        # Initialize symbol library with images directory for viewshots
+        learned_symbols_images_dir = Path(config.get('paths', {}).get('learned_symbols_images_dir', 'learned_symbols_images'))
         symbol_library = SymbolLibrary(
             llm_client=llm_client,
-            learning_db_path=learning_db_path
+            learning_db_path=learning_db_path,
+            images_dir=learned_symbols_images_dir
         )
         
         # Initialize active learner

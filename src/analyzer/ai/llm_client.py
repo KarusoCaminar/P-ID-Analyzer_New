@@ -102,6 +102,22 @@ class LLMClient:
         # circuit_breaker.load_state(circuit_state_path)  # DISABLED: Always start fresh
         logger.info("Circuit breaker initialized with clean state (file loading disabled for fresh start)")
     
+    def close(self) -> None:
+        """Close client and cleanup resources."""
+        # CRITICAL FIX: Shutdown ThreadPoolExecutor to prevent thread leaks
+        if hasattr(self, 'timeout_executor') and self.timeout_executor:
+            logger.debug("Shutting down ThreadPoolExecutor...")
+            self.timeout_executor.shutdown(wait=True)
+            logger.debug("ThreadPoolExecutor shut down")
+    
+    def __del__(self) -> None:
+        """Cleanup on deletion."""
+        # CRITICAL FIX: Ensure ThreadPoolExecutor is shut down on deletion
+        try:
+            self.close()
+        except Exception:
+            pass  # Ignore errors during cleanup
+    
     def _load_models(self) -> None:
         """Load all configured models."""
         for model_name_display, model_info in self.config.get("models", {}).items():
@@ -225,9 +241,11 @@ class LLMClient:
         cache_key = None
         if use_cache:
             cache_key = self._generate_cache_key(model_info, system_prompt, user_prompt, image_path)
-            if cache_key in self.disk_cache:
+            # CRITICAL FIX: Use explicit get() method instead of container semantics
+            cached_value = self.disk_cache.get(cache_key)
+            if cached_value is not None:
                 logger.debug(f"Cache hit for LLM call")
-                return self.disk_cache[cache_key]
+                return cached_value
         
         # Prepare request
         model_id = model_info.get('id')
@@ -236,7 +254,8 @@ class LLMClient:
             return None
         
         model = self.gemini_clients[model_id]
-        generation_config = model_info.get('generation_config', {})
+        # CRITICAL FIX: Copy generation_config before modifying to avoid mutating shared config
+        generation_config = dict(model_info.get('generation_config', {}))
         
         # OPTIMIZATION: Ensure response_mime_type is set for structured output
         if 'response_mime_type' not in generation_config:
@@ -292,18 +311,41 @@ class LLMClient:
                 llm_logger.warning(f"Failed to save prompt file: {e}", extra={'request_id': request_id})
         
         # Prepare content
-        parts = [user_prompt]
+        # CRITICAL FIX: parts must be List[Union[str, Part]] not list[str]
+        parts: List[Union[str, Part]] = [user_prompt]
         if image_path and os.path.exists(image_path):
             parts.append(self._image_to_part(image_path))
         
         # Build payload for validation
+        # CRITICAL FIX: Don't convert Part objects to strings for size validation
+        # Keep Part objects as-is for SDK, but create a separate sanitized version for validation
         payload = {
             "model": model_id,
-            "parts": [part if isinstance(part, str) else str(part) for part in parts],
+            "parts": parts,  # Keep Part objects as-is for SDK
             "generation_config": generation_config
         }
         
-        # Sanitize payload
+        # Create sanitized payload for size validation (convert Parts to size estimates)
+        # CRITICAL FIX: Estimate Part size instead of converting to string
+        def estimate_part_size(part):
+            """Estimate size of Part object for validation."""
+            if isinstance(part, str):
+                return len(part.encode('utf-8'))
+            elif isinstance(part, Part):
+                # Estimate: Part objects are typically images, estimate ~100KB average
+                # This is a rough estimate for validation purposes
+                return 100 * 1024  # 100KB estimate
+            else:
+                return len(str(part).encode('utf-8'))
+        
+        # Build sanitized payload for validation (with size estimates)
+        validation_payload = {
+            "model": model_id,
+            "parts": [estimate_part_size(part) for part in parts],  # Use size estimates
+            "generation_config": generation_config
+        }
+        
+        # Sanitize payload (for logging/debugging only, not for SDK)
         try:
             sanitized_payload = self._sanitize_payload(payload)
         except Exception as e:
@@ -314,8 +356,8 @@ class LLMClient:
         payload_validation_ok = True
         payload_validation_errors = []
         
-        # Size validation
-        size_valid, size_error = self._validate_payload_size(sanitized_payload)
+        # Size validation (use validation_payload with size estimates)
+        size_valid, size_error = self._validate_payload_size(validation_payload)
         if not size_valid:
             payload_validation_ok = False
             payload_validation_errors.append(size_error)
@@ -339,7 +381,9 @@ class LLMClient:
             logger.debug(f"Failed to capture request: {e}")
         
         # Get timeout from config or parameter
-        base_timeout = timeout or self.config.get('logic_parameters', {}).get('llm_default_timeout', 240)
+        # CRITICAL FIX: Ensure timeout is int, not float
+        base_timeout_raw = timeout or self.config.get('logic_parameters', {}).get('llm_default_timeout', 240)
+        base_timeout = int(base_timeout_raw) if base_timeout_raw is not None else 240
         max_retries = self.config.get('logic_parameters', {}).get('llm_max_retries', 3)
         
         # Adjust timeout based on payload size
@@ -368,9 +412,12 @@ class LLMClient:
                         "Skipping API call to minimize failures."
                     )
                     # Return cached result if available (fallback)
-                    if cache_key and cache_key in self.disk_cache:
-                        logger.info("Returning cached result due to circuit breaker")
-                        return self.disk_cache[cache_key]
+                    # CRITICAL FIX: Use explicit get() method instead of container semantics
+                    if cache_key:
+                        cached_value = self.disk_cache.get(cache_key)
+                        if cached_value is not None:
+                            logger.info("Returning cached result due to circuit breaker")
+                            return cached_value
                     return None
                 
                 response = self._call_with_timeout(
@@ -392,8 +439,9 @@ class LLMClient:
                 # ENHANCED LOGGING: Log response details
                 if response:
                     # Extract response text
+                    # CRITICAL FIX: Check if response is Vertex AI response object before accessing .text
                     response_text = None
-                    if hasattr(response, 'text'):
+                    if not isinstance(response, (str, dict)) and hasattr(response, 'text'):
                         response_text = response.text
                     elif isinstance(response, dict):
                         response_text = json.dumps(response, indent=2, ensure_ascii=False)
@@ -477,8 +525,9 @@ class LLMClient:
                     )
                 
                 # Update response summary
+                # CRITICAL FIX: Check if response is Vertex AI response object before accessing attributes
                 tokens = None
-                if hasattr(response, 'usage_metadata') and response.usage_metadata:
+                if not isinstance(response, (str, dict)) and hasattr(response, 'usage_metadata') and response.usage_metadata:
                     # UsageMetadata is a proto object, access attributes directly
                     tokens = getattr(response.usage_metadata, 'total_token_count', None)
                 
@@ -489,8 +538,9 @@ class LLMClient:
                 }
                 
                 # Cache result (even on success, helps with future failures)
+                # CRITICAL FIX: Use explicit set() method instead of container semantics
                 if use_cache and cache_key:
-                    self.disk_cache[cache_key] = parsed_response
+                    self.disk_cache.set(cache_key, parsed_response)
                 
                 # Record success for circuit breaker
                 self.retry_handler.record_success()
@@ -549,7 +599,8 @@ class LLMClient:
                         logger.warning("Timeout error - keeping same timeout for retry (increasing timeout won't help)")
                         # Don't increase timeout, it's already too long
                     else:
-                        timeout_seconds = min(timeout_seconds * 1.5, 600)  # Cap timeout at 10 minutes
+                        # CRITICAL FIX: Ensure timeout_seconds is int
+                        timeout_seconds = int(min(timeout_seconds * 1.5, 600))  # Cap timeout at 10 minutes
                     time.sleep(backoff_seconds)
                     continue
                 else:
@@ -590,8 +641,9 @@ class LLMClient:
                         )
                         if fallback_response:
                             parsed_response = self._parse_response(fallback_response, expected_json_keys)
+                            # CRITICAL FIX: Use explicit set() method instead of container semantics
                             if use_cache and cache_key:
-                                self.disk_cache[cache_key] = parsed_response
+                                self.disk_cache.set(cache_key, parsed_response)
                             self.retry_handler.record_success()
                             
                             # Write debug file
@@ -621,18 +673,24 @@ class LLMClient:
                     continue
                 else:
                     # For non-retryable errors, return cached result if available (fallback)
-                    if cache_key and cache_key in self.disk_cache:
-                        logger.info("Returning cached result due to non-retryable error")
-                        return self.disk_cache[cache_key]
+                    # CRITICAL FIX: Use explicit get() method instead of container semantics
+                    if cache_key:
+                        cached_value = self.disk_cache.get(cache_key)
+                        if cached_value is not None:
+                            logger.info("Returning cached result due to non-retryable error")
+                            return cached_value
                     break
         
         # All retries failed - try to return cached result as fallback
-        if cache_key and cache_key in self.disk_cache:
-            logger.warning(
-                f"All retry attempts failed. Returning cached result as fallback. "
-                f"Last error: {last_error}"
-            )
-            return self.disk_cache[cache_key]
+        # CRITICAL FIX: Use explicit get() method instead of container semantics
+        if cache_key:
+            cached_value = self.disk_cache.get(cache_key)
+            if cached_value is not None:
+                logger.warning(
+                    f"All retry attempts failed. Returning cached result as fallback. "
+                    f"Last error: {last_error}"
+                )
+                return cached_value
         
         # Save circuit breaker state
         try:
@@ -726,9 +784,19 @@ class LLMClient:
     
     def _image_to_part(self, image_path: str) -> Part:
         """Convert image path to Vertex AI Part."""
-        with open(image_path, "rb") as f:
-            image_bytes = f.read()
-        return Part.from_data(image_bytes, mime_type="image/png")
+        # CRITICAL FIX: Add try/except around file read to handle missing files gracefully
+        try:
+            if not os.path.exists(image_path):
+                logger.error(f"Image path does not exist: {image_path}")
+                raise FileNotFoundError(f"Image path does not exist: {image_path}")
+            with open(image_path, "rb") as f:
+                image_bytes = f.read()
+            return Part.from_data(image_bytes, mime_type="image/png")
+        except FileNotFoundError:
+            raise  # Re-raise FileNotFoundError
+        except Exception as e:
+            logger.error(f"Error reading image file {image_path}: {e}", exc_info=True)
+            raise
     
     def _generate_cache_key(
         self,
@@ -744,10 +812,21 @@ class LLMClient:
             user_prompt
         ]
         if image_path:
-            # Hash image file for cache key
-            with open(image_path, "rb") as f:
-                image_hash = hashlib.md5(f.read()).hexdigest()
-            key_parts.append(image_hash)
+            # CRITICAL FIX: Add try/except around file read to handle missing files gracefully
+            try:
+                if not os.path.exists(image_path):
+                    logger.warning(f"Image path does not exist for cache key: {image_path}, using path as hash")
+                    # Use path as fallback hash
+                    image_hash = hashlib.md5(image_path.encode()).hexdigest()
+                else:
+                    with open(image_path, "rb") as f:
+                        image_hash = hashlib.md5(f.read()).hexdigest()
+                key_parts.append(image_hash)
+            except Exception as e:
+                logger.warning(f"Error reading image file for cache key {image_path}: {e}, using path as hash")
+                # Use path as fallback hash
+                image_hash = hashlib.md5(image_path.encode()).hexdigest()
+                key_parts.append(image_hash)
         key_string = "|".join(key_parts)
         return hashlib.sha256(key_string.encode()).hexdigest()
     
@@ -757,8 +836,42 @@ class LLMClient:
         expected_json_keys: Optional[List[str]] = None
     ) -> Union[Dict[str, Any], str]:
         """Parse LLM response."""
+        # CRITICAL FIX: Accept dict/str responses before checking .text attribute
+        if isinstance(response, dict):
+            # Already a dict - validate expected keys if provided
+            if expected_json_keys:
+                missing = [k for k in expected_json_keys if k not in response]
+                if missing:
+                    logger.warning(f"Expected JSON keys missing: {missing}")
+            return response
+        
+        if isinstance(response, str):
+            # Already a string - try to parse as JSON
+            text = response.strip()
+            try:
+                parsed = json.loads(text)
+                if isinstance(parsed, dict):
+                    if expected_json_keys:
+                        missing = [k for k in expected_json_keys if k not in parsed]
+                        if missing:
+                            logger.warning(f"Expected JSON keys missing: {missing}")
+                    return parsed
+                return text
+            except json.JSONDecodeError:
+                # Try to extract JSON from markdown code blocks
+                import re
+                json_match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', text, re.DOTALL)
+                if json_match:
+                    try:
+                        parsed = json.loads(json_match.group(1))
+                        return parsed
+                    except json.JSONDecodeError:
+                        pass
+                return text
+        
+        # Check for .text attribute (Vertex AI response object)
         if not hasattr(response, 'text'):
-            logger.error("LLM response has no 'text' attribute")
+            logger.error(f"LLM response has no 'text' attribute and is not dict/str. Type: {type(response)}")
             return {}
         
         text = response.text.strip()
@@ -807,12 +920,15 @@ class LLMClient:
                 if not os.path.exists(image_input):
                     logger.error(f"Image path does not exist: {image_input}")
                     return None
-                vertex_image = VertexImage.load_from_file(image_input)
+                # Read file as bytes
+                with open(image_input, 'rb') as f:
+                    image_bytes = f.read()
+                vertex_image = VertexImage(image_bytes=image_bytes)
             elif isinstance(image_input, Image.Image):
                 # Convert PIL to bytes
                 buffered = BytesIO()
                 image_input.save(buffered, format="PNG")
-                vertex_image = VertexImage.from_bytes(buffered.getvalue())
+                vertex_image = VertexImage(image_bytes=buffered.getvalue())
             else:
                 logger.error(f"Invalid image input type: {type(image_input)}")
                 return None
@@ -822,8 +938,40 @@ class LLMClient:
             if embeddings and hasattr(embeddings, 'image_embedding') and embeddings.image_embedding:
                 return list(embeddings.image_embedding)
             return None
-            
         except Exception as e:
             logger.error(f"Error getting image embedding: {e}", exc_info=True)
             return None
+
+
+class DummyLLMClient:
+    """
+    Lightweight dummy LLM client used for local/offline testing when real LLM
+    provider credentials are not available. This implements a minimal subset of
+    the LLMClient interface used by the pipeline so analysis can run without
+    external API calls.
+    """
+
+    def __init__(self, project_id: str, default_location: str, config: Dict[str, Any]):
+        self.project_id = project_id
+        self.default_location = default_location
+        self.config = config or {}
+        self.debug_dir = Path(self.config.get('paths', {}).get('debug_dir', 'outputs/debug'))
+        self.debug_dir.mkdir(parents=True, exist_ok=True)
+
+    def call_llm(self, *args, **kwargs) -> Optional[Union[Dict[str, Any], str]]:
+        """Return a conservative, empty-but-valid analysis scaffold so the
+        rest of the pipeline can continue during offline runs.
+        """
+        # Minimal compatible structure the pipeline expects
+        response = {
+            "elements": [],
+            "connections": [],
+            "quality_score": 0.0,
+            "kpis": {}
+        }
+        return response
+
+    def get_image_embedding(self, image_input: Union[str, Image.Image]) -> Optional[List[float]]:
+        # Return a fixed small embedding to allow similarity steps to run
+        return [0.0] * 16
 

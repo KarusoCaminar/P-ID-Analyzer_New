@@ -106,7 +106,7 @@ class CGMGenerator:
             conn_copy['to_id'] = to_id_normalized
             normalized_connections.append(conn_copy)
         
-        logger.info(f"Connection normalization: {len(connections)} → {len(normalized_connections)} (removed {len(connections) - len(normalized_connections)} invalid connections)")
+        logger.info(f"Connection normalization: {len(connections)} -> {len(normalized_connections)} (removed {len(connections) - len(normalized_connections)} invalid connections)")
         
         # Update connections with normalized IDs
         self.connections = normalized_connections
@@ -183,7 +183,7 @@ class Network:
                 connector_lines.append(connector_code)
                 valid_connections.append(conn)
         
-        logger.info(f"CGM generation: {len(self.connections)} connections → {len(valid_connections)} valid connectors")
+        logger.info(f"CGM generation: {len(self.connections)} connections -> {len(valid_connections)} valid connectors")
         
         # Handle split/merge points
         split_merge_connectors = self._detect_split_merge_connectors()

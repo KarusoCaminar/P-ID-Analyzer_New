@@ -21,6 +21,8 @@ from datetime import datetime
 project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
 
+from src.utils.json_encoder import PydanticJSONEncoder
+
 # Load .env file automatically (CRITICAL: Lädt GCP-Credentials automatisch)
 try:
     from src.utils.env_loader import load_env_automatically
@@ -100,6 +102,106 @@ def load_ground_truth(gt_path: str) -> Optional[Dict[str, Any]]:
         return None
 
 
+def validate_test_configuration() -> Dict[str, Any]:
+    """
+    Validiert die Test-Konfiguration (Bilder und Ground Truth).
+    
+    Returns:
+        Dictionary mit Validierungsergebnissen
+    """
+    validation_results = {
+        "valid": True,
+        "errors": [],
+        "warnings": [],
+        "test_images": {},
+        "test_ground_truth": {}
+    }
+    
+    logger.info("=" * 60)
+    logger.info("[VALIDATION] Validiere Test-Konfiguration...")
+    logger.info("=" * 60)
+    
+    # Validate test images
+    for test_key, image_path in TEST_IMAGES.items():
+        image_file = Path(image_path)
+        if not image_file.exists():
+            # Try relative to project root
+            image_file = project_root / image_path
+            if not image_file.exists():
+                validation_results["valid"] = False
+                error_msg = f"Test {test_key}: Bild nicht gefunden: {image_path}"
+                validation_results["errors"].append(error_msg)
+                validation_results["test_images"][test_key] = {
+                    "path": image_path,
+                    "exists": False,
+                    "error": error_msg
+                }
+                logger.error(f"[ERROR] {error_msg}")
+                continue
+        
+        validation_results["test_images"][test_key] = {
+            "path": str(image_file.resolve()),
+            "exists": True,
+            "size_mb": image_file.stat().st_size / (1024 * 1024)
+        }
+        logger.info(f"[OK] Test {test_key}: Bild gefunden: {image_file.resolve()}")
+    
+    # Validate ground truth files
+    for test_key, gt_path in TEST_GROUND_TRUTH.items():
+        gt_file = Path(gt_path)
+        if not gt_file.exists():
+            # Try relative to project root
+            gt_file = project_root / gt_path
+            if not gt_file.exists():
+                validation_results["warnings"].append(
+                    f"Test {test_key}: Ground Truth nicht gefunden: {gt_path} (Test läuft ohne Validierung)"
+                )
+                validation_results["test_ground_truth"][test_key] = {
+                    "path": gt_path,
+                    "exists": False,
+                    "warning": "Ground Truth nicht gefunden"
+                }
+                logger.warning(f"[WARNING] Test {test_key}: Ground Truth nicht gefunden: {gt_path}")
+                continue
+        
+        # Try to load and validate JSON structure
+        try:
+            with open(gt_file, 'r', encoding='utf-8') as f:
+                gt_data = json.load(f)
+            
+            elements_count = len(gt_data.get('elements', []))
+            connections_count = len(gt_data.get('connections', []))
+            
+            validation_results["test_ground_truth"][test_key] = {
+                "path": str(gt_file.resolve()),
+                "exists": True,
+                "elements_count": elements_count,
+                "connections_count": connections_count,
+                "valid": True
+            }
+            logger.info(f"[OK] Test {test_key}: Ground Truth gefunden: {gt_file.resolve()} ({elements_count} Elemente, {connections_count} Verbindungen)")
+        except Exception as e:
+            validation_results["warnings"].append(
+                f"Test {test_key}: Ground Truth ungültig: {e}"
+            )
+            validation_results["test_ground_truth"][test_key] = {
+                "path": str(gt_file.resolve()),
+                "exists": True,
+                "valid": False,
+                "error": str(e)
+            }
+            logger.warning(f"[WARNING] Test {test_key}: Ground Truth ungültig: {e}")
+    
+    logger.info("=" * 60)
+    if validation_results["valid"]:
+        logger.info("[OK] Test-Konfiguration ist gültig!")
+    else:
+        logger.error("[ERROR] Test-Konfiguration hat Fehler!")
+    logger.info("=" * 60)
+    
+    return validation_results
+
+
 def run_test(
     test_name: str, 
     coordinator: PipelineCoordinator, 
@@ -120,12 +222,31 @@ def run_test(
     Returns:
         Dictionary mit KPIs (element_f1, connection_f1, etc.)
     """
-    logger.info("=" * 60)
-    logger.info(f"[START] Test: {test_name}")
-    logger.info(f"Overrides: {json.dumps(param_overrides, indent=2)}")
-    
+    # Create test output directory with clean structure
     test_output_dir = Path(OUTPUT_DIR_BASE) / test_name.replace(" ", "_").replace(":", "")
     test_output_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Setup logging for this test - save logs directly to test directory
+    test_log_file = test_output_dir / "pipeline.log"
+    LoggingService.setup_logging(
+        log_level=logging.INFO,
+        log_file=test_log_file
+    )
+    
+    # Setup LLM logging for this test
+    test_llm_log_dir = test_output_dir / "logs"
+    test_llm_log_dir.mkdir(parents=True, exist_ok=True)
+    LoggingService.setup_llm_logging(
+        log_dir=test_llm_log_dir,
+        log_level=logging.DEBUG
+    )
+    
+    logger.info("=" * 60)
+    logger.info(f"[START] Starte Test: {test_name}")
+    logger.info(f"Overrides: {json.dumps(param_overrides, indent=2)}")
+    logger.info(f"Output-Verzeichnis: {test_output_dir}")
+    logger.info(f"Log-Datei: {test_log_file}")
+    logger.info("=" * 60)
     
     # 1. Pipeline ausführen
     try:
@@ -165,6 +286,26 @@ def run_test(
                 'connections': getattr(result, 'connections', [])
             }
         
+        # Save results JSON to test directory (with datetime serialization support)
+        results_file = test_output_dir / "results.json"
+        
+        # Helper function to serialize datetime and other non-serializable objects
+        def json_serializer(obj):
+            """JSON serializer for objects not serializable by default json code"""
+            if isinstance(obj, datetime):
+                return obj.isoformat()
+            elif hasattr(obj, '__dict__'):
+                return obj.__dict__
+            elif hasattr(obj, 'model_dump'):
+                return obj.model_dump()
+            elif hasattr(obj, 'dict'):
+                return obj.dict()
+            return str(obj)
+        
+        with open(results_file, 'w', encoding='utf-8') as f:
+            json.dump(result_dict, f, indent=2, ensure_ascii=False, default=json_serializer)
+        logger.info(f"Ergebnisse gespeichert: {results_file}")
+        
     except Exception as e:
         logger.error(f"Test '{test_name}' FEHLGESCHLAGEN während der Ausführung: {e}", exc_info=True)
         return {
@@ -186,17 +327,13 @@ def run_test(
                 truth_data=gt_data
             )
             
-            # Extract F1 scores
-            quality_metrics = kpis.get('quality_metrics', {})
-            elements_kpi = quality_metrics.get('elements', {})
-            connections_kpi = quality_metrics.get('connections', {})
-            
-            f1_elements = elements_kpi.get('f1_score', 0.0)
-            f1_connections = connections_kpi.get('f1_score', 0.0)
-            precision_elements = elements_kpi.get('precision', 0.0)
-            recall_elements = elements_kpi.get('recall', 0.0)
-            precision_connections = connections_kpi.get('precision', 0.0)
-            recall_connections = connections_kpi.get('recall', 0.0)
+            # Extract F1 scores - KPIs are returned directly, not nested
+            f1_elements = kpis.get('element_f1', 0.0)
+            f1_connections = kpis.get('connection_f1', 0.0)
+            precision_elements = kpis.get('element_precision', 0.0)
+            recall_elements = kpis.get('element_recall', 0.0)
+            precision_connections = kpis.get('connection_precision', 0.0)
+            recall_connections = kpis.get('connection_recall', 0.0)
             
             logger.info(f"[DONE] Test '{test_name}' Abgeschlossen:")
             logger.info(f"  Element F1:    {f1_elements:.4f}")
@@ -206,6 +343,21 @@ def run_test(
             logger.info(f"  Connection Precision: {precision_connections:.4f}")
             logger.info(f"  Connection Recall:    {recall_connections:.4f}")
             logger.info("=" * 60)
+            
+            # Save KPIs to test directory
+            kpis_file = test_output_dir / "kpis.json"
+            kpis_data = {
+                "element_f1": f1_elements,
+                "connection_f1": f1_connections,
+                "element_precision": precision_elements,
+                "element_recall": recall_elements,
+                "connection_precision": precision_connections,
+                "connection_recall": recall_connections,
+                "full_kpis": kpis
+            }
+            with open(kpis_file, 'w', encoding='utf-8') as f:
+                json.dump(kpis_data, f, indent=2, ensure_ascii=False)
+            logger.info(f"KPIs gespeichert: {kpis_file}")
             
             return {
                 "element_f1": f1_elements,
@@ -292,19 +444,32 @@ def get_test_overrides(test_name: str) -> Optional[Dict[str, Any]]:
     if test_name == "Test 5a: Test 4 + Predictive (2d)":
         overrides = get_test_overrides("Test 4: Baseline Complex P&ID (Spezialisten-Kette)")
         if overrides:
-            overrides["use_predictive_completion"] = True
+            # CRITICAL FIX: Test 5a should ONLY test Predictive Completion (Phase 2d)
+            # Deactivate other phases to isolate Predictive Completion
+            overrides["use_predictive_completion"] = True  # ✅ AKTIVIERT
+            overrides["use_polyline_refinement"] = False  # Deaktiviert (nur Predictive testen)
+            overrides["use_self_correction_loop"] = False  # Deaktiviert (nur Predictive testen)
         return overrides
     
     if test_name == "Test 5b: Test 4 + Polyline (2e)":
         overrides = get_test_overrides("Test 4: Baseline Complex P&ID (Spezialisten-Kette)")
         if overrides:
-            overrides["use_polyline_refinement"] = True
+            # CRITICAL FIX: Test 5b should ONLY test Polyline Refinement (Phase 2e)
+            # Deactivate Predictive to avoid Phase 2d crash
+            overrides["use_predictive_completion"] = False  # Deaktiviert (nur Polyline testen)
+            overrides["use_polyline_refinement"] = True  # ✅ AKTIVIERT
+            overrides["use_self_correction_loop"] = False  # Deaktiviert (nur Polyline testen)
         return overrides
     
     if test_name == "Test 5c: Test 4 + Self-Correction (3)":
         overrides = get_test_overrides("Test 4: Baseline Complex P&ID (Spezialisten-Kette)")
         if overrides:
-            overrides["use_self_correction_loop"] = True
+            # CRITICAL FIX: Test 5c should test Self-Correction (Phase 3)
+            # Keep Test 4 baseline (Swarm + Monolith + Fusion + Polyline)
+            # But add Self-Correction to fix errors
+            overrides["use_predictive_completion"] = False  # Deaktiviert (nur Self-Correction testen)
+            overrides["use_polyline_refinement"] = True  # ✅ AKTIVIERT (für Test 4 baseline)
+            overrides["use_self_correction_loop"] = True  # ✅ AKTIVIERT (Phase 3)
             # WICHTIGER FIX: Min Score auf 90.0 setzen, damit Phase 3 überhaupt läuft
             overrides["self_correction_min_quality_score"] = 90.0
         return overrides
@@ -334,6 +499,28 @@ def main():
     )
     
     args = parser.parse_args()
+    
+    # --- Create base output directory ---
+    output_base = Path(OUTPUT_DIR_BASE)
+    output_base.mkdir(parents=True, exist_ok=True)
+    
+    # --- Validate test configuration ---
+    validation_results = validate_test_configuration()
+    
+    # Save validation results to summaries subdirectory
+    summaries_dir = output_base / "summaries"
+    summaries_dir.mkdir(parents=True, exist_ok=True)
+    validation_file = summaries_dir / f"validation_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+    with open(validation_file, 'w', encoding='utf-8') as f:
+        json.dump(validation_results, f, indent=2, ensure_ascii=False)
+    logger.info(f"Validierungsergebnisse gespeichert: {validation_file}")
+    
+    if not validation_results["valid"]:
+        logger.error("Test-Konfiguration ist ungültig. Abbruch.")
+        logger.error("Fehler:")
+        for error in validation_results["errors"]:
+            logger.error(f"  - {error}")
+        sys.exit(1)
     
     # --- Service-Initialisierung ---
     try:
@@ -483,16 +670,22 @@ def main():
             logger.info(f"  Elemente: {kpis.get('element_count', 0)}")
             logger.info(f"  Verbindungen: {kpis.get('connection_count', 0)}")
     
-    # Save summary to file
-    summary_file = Path(OUTPUT_DIR_BASE) / f"summary_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
-    summary_file.parent.mkdir(parents=True, exist_ok=True)
+    # Save summary to file in summaries subdirectory (to avoid cluttering main folder)
+    summaries_dir = Path(OUTPUT_DIR_BASE) / "summaries"
+    summaries_dir.mkdir(parents=True, exist_ok=True)
+    summary_file = summaries_dir / f"summary_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+    summary_data = {
+        "timestamp": datetime.now().isoformat(),
+        "image_path": image_path,
+        "ground_truth": args.ground_truth,
+        "results": results_summary,
+        "test_configuration": {
+            "test_images": TEST_IMAGES,
+            "test_ground_truth": TEST_GROUND_TRUTH
+        }
+    }
     with open(summary_file, 'w', encoding='utf-8') as f:
-        json.dump({
-            "timestamp": datetime.now().isoformat(),
-            "image_path": image_path,
-            "ground_truth": args.ground_truth,
-            "results": results_summary
-        }, f, indent=2)
+        json.dump(summary_data, f, indent=2, ensure_ascii=False)
     
     logger.info(f"Zusammenfassung gespeichert: {summary_file}")
     

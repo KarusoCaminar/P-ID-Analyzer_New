@@ -135,6 +135,7 @@ class MultiModelCritic:
                     connections,
                     errors_dict,
                     image_path=None,  # Could pass image_path if available
+                    debug_map_path=None,  # Could pass debug_map_path if available
                     model_strategy=model_strategy
                 )
                 
@@ -441,12 +442,234 @@ class MultiModelCritic:
         
         return critical_errors
     
+    def validate_with_visual_feedback(
+        self,
+        elements: List[Dict[str, Any]],
+        connections: List[Dict[str, Any]],
+        original_image_path: str,
+        debug_map_path: str,
+        legend_data: Optional[Dict[str, Any]] = None,
+        model_strategy: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """
+        Validate and critique analysis results using visual feedback.
+        
+        CRITICAL: This method uses visual feedback (original image + debug map) to
+        enable the LLM to "see" its own work and identify errors visually.
+        
+        Process:
+        1. LLM receives original image + debug map (visualization of current analysis)
+        2. LLM compares debug map with original image
+        3. LLM identifies visual errors (missing boxes, wrong boxes, wrong connections)
+        4. LLM generates corrections based on visual comparison
+        
+        Args:
+            elements: Detected elements
+            connections: Detected connections
+            original_image_path: Path to original P&ID image
+            debug_map_path: Path to debug map (visualization of current analysis)
+            legend_data: Legend data (symbol_map, line_map)
+            model_strategy: Model strategy configuration
+            
+        Returns:
+            Dictionary with visual corrections:
+            - visual_errors: List of visually identified errors
+            - corrections: List of corrections to apply
+            - validation_score: Visual validation score
+        """
+        logger.info("=== Visual Feedback Validation: Starting visual critique ===")
+        
+        # Get model info (use Pro model for visual critique)
+        if model_strategy:
+            model_info = model_strategy.get('critic_model') or model_strategy.get('meta_model') or model_strategy.get('detail_model')
+        else:
+            model_info = self.config.get('models', {}).get('Google Gemini 2.5 Pro', {})
+        
+        if not model_info:
+            models_cfg = self.config.get('models', {})
+            model_info = list(models_cfg.values())[0] if models_cfg else {}
+        
+        # Normalize model info
+        if isinstance(model_info, dict):
+            critic_model_info = model_info
+        elif hasattr(model_info, 'model_dump'):
+            critic_model_info = model_info.model_dump()
+        elif hasattr(model_info, 'dict'):
+            critic_model_info = model_info.dict()
+        else:
+            critic_model_info = {}
+        
+        if not critic_model_info:
+            logger.warning("No critic model available. Skipping visual feedback validation.")
+            return {
+                'visual_errors': [],
+                'corrections': [],
+                'validation_score': 0.0
+            }
+        
+        # Get visual feedback prompt from config
+        visual_feedback_prompt_template = self.config.get('prompts', {}).get('visual_feedback_critique_prompt_template', '')
+        
+        if not visual_feedback_prompt_template:
+            logger.warning("No visual_feedback_critique_prompt_template found in config. Using default.")
+            visual_feedback_prompt_template = self._get_default_visual_feedback_prompt()
+        
+        # Prepare prompt with current analysis data
+        import json
+        elements_json = json.dumps(elements[:50], indent=2, ensure_ascii=False)  # Limit to 50 for prompt size
+        connections_json = json.dumps(connections[:50], indent=2, ensure_ascii=False)  # Limit to 50
+        
+        legend_context = ""
+        if legend_data:
+            symbol_map = legend_data.get('symbol_map', {})
+            line_map = legend_data.get('line_map', {})
+            legend_context = f"""
+**LEGEND DATA:**
+- Symbol Map: {json.dumps(symbol_map, indent=2, ensure_ascii=False)}
+- Line Map: {json.dumps(line_map, indent=2, ensure_ascii=False)}
+"""
+        
+        prompt = visual_feedback_prompt_template.format(
+            elements_json=elements_json,
+            connections_json=connections_json,
+            legend_context=legend_context
+        )
+        
+        system_prompt = """Du bist ein P&ID-Chef-Inspektor mit visueller Expertise. Deine Aufgabe ist es, die Arbeit eines untergeordneten KI-Analysten zu überprüfen und zu korrigieren, indem du das Originalbild mit der Visualisierung der Analyse vergleichst."""
+        
+        try:
+            # Call LLM with debug map image
+            # Note: We send the debug map as the primary image
+            # The original image is referenced in the prompt for context
+            # TODO: Future enhancement: Support multiple images in call_llm for side-by-side comparison
+            
+            # Enhance prompt to include original image path for context
+            enhanced_prompt = f"""{prompt}
+
+**WICHTIGER HINWEIS:**
+- Das Bild, das du siehst, ist das [Debug-Bild] (Visualisierung der aktuellen Analyse)
+- Das [Originalbild] ist unter folgendem Pfad verfügbar: {original_image_path}
+- Du musst das Debug-Bild mit dem Originalbild vergleichen, um Fehler zu identifizieren
+- Wenn du das Originalbild sehen musst, kannst du es in einem separaten Request anfordern
+- Für jetzt: Nutze das Debug-Bild und die JSON-Daten, um visuelle Fehler zu identifizieren"""
+            
+            response = self.llm_client.call_llm(
+                critic_model_info,
+                system_prompt,
+                enhanced_prompt,
+                debug_map_path,  # Primary image: debug map (shows current analysis)
+                expected_json_keys=["visual_errors", "corrections", "validation_score"]
+            )
+            
+            if response and isinstance(response, dict):
+                visual_errors = response.get('visual_errors', [])
+                corrections = response.get('corrections', [])
+                validation_score = response.get('validation_score', 0.0)
+                
+                logger.info(f"Visual Feedback: {len(visual_errors)} visual errors identified, "
+                           f"{len(corrections)} corrections suggested, score: {validation_score:.2f}")
+                
+                return {
+                    'visual_errors': visual_errors,
+                    'corrections': corrections,
+                    'validation_score': float(validation_score)
+                }
+            else:
+                logger.warning(f"Visual Feedback: Invalid response type: {type(response)}")
+                return {
+                    'visual_errors': [],
+                    'corrections': [],
+                    'validation_score': 0.0
+                }
+                
+        except Exception as e:
+            logger.error(f"Error in visual feedback validation: {e}", exc_info=True)
+            return {
+                'visual_errors': [],
+                'corrections': [],
+                'validation_score': 0.0
+            }
+    
+    def _get_default_visual_feedback_prompt(self) -> str:
+        """Get default visual feedback prompt if not in config."""
+        return """**TASK:** Du bist ein P&ID-Chef-Inspektor. Du wirst zwei Bilder sehen:
+
+1. **[Originalbild]:** Das zu analysierende P&ID-Diagramm
+2. **[Debug-Bild]:** Eine Visualisierung der aktuellen Analyse (was die untergeordnete KI erkannt hat)
+
+**AKTUELLE ANALYSE (JSON):**
+- Elemente: {elements_json}
+- Verbindungen: {connections_json}
+
+{legend_context}
+
+**AUFGABE:**
+1. **Vergleiche** das [Debug-Bild] mit dem [Originalbild]
+2. **Identifiziere** alle visuellen Fehler:
+   - Fehlende Bounding Boxes (Elemente im Original, aber nicht im Debug-Bild)
+   - Falsch gezeichnete Bounding Boxes (zu groß, zu klein, falsche Position)
+   - Halluzinierte Elemente (Bounding Boxes im Debug-Bild, aber keine Komponente im Original)
+   - Fehlende Verbindungen (Linien im Original, aber nicht im Debug-Bild)
+   - Falsche Verbindungen (Linien im Debug-Bild, aber nicht im Original)
+3. **Generiere** Korrekturen als JSON
+
+**RETURN FORMAT (STRICT JSON):**
+{{
+  "visual_errors": [
+    {{
+      "type": "missing_element",
+      "element_id": "P-201",
+      "reason": "Element P-201 ist im Originalbild sichtbar, aber nicht im Debug-Bild",
+      "suggested_bbox": {{"x": 0.1, "y": 0.2, "width": 0.05, "height": 0.04}}
+    }},
+    {{
+      "type": "hallucinated_element",
+      "element_id": "FT-11",
+      "reason": "Bounding Box für FT-11 im Debug-Bild, aber keine Komponente an dieser Position im Originalbild"
+    }},
+    {{
+      "type": "wrong_bbox",
+      "element_id": "V-01",
+      "reason": "Bounding Box zu groß, schließt Text-Label ein",
+      "current_bbox": {{"x": 0.3, "y": 0.4, "width": 0.1, "height": 0.1}},
+      "corrected_bbox": {{"x": 0.32, "y": 0.42, "width": 0.05, "height": 0.05}}
+    }}
+  ],
+  "corrections": [
+    {{
+      "action": "add_element",
+      "element": {{
+        "id": "P-201",
+        "type": "Pump",
+        "label": "Pump P-201",
+        "bbox": {{"x": 0.1, "y": 0.2, "width": 0.05, "height": 0.04}},
+        "confidence": 0.9
+      }}
+    }},
+    {{
+      "action": "remove_element",
+      "element_id": "FT-11",
+      "reason": "Halluzination: Keine Komponente an dieser Position"
+    }},
+    {{
+      "action": "resize_bbox",
+      "element_id": "V-01",
+      "new_bbox": {{"x": 0.32, "y": 0.42, "width": 0.05, "height": 0.05}},
+      "reason": "BBox zu groß, schließt Text ein"
+    }}
+  ],
+  "validation_score": 75.0
+}}
+
+**CRITICAL:** Nur Korrekturen vorschlagen, wenn du dir visuell sicher bist. Wenn du unsicher bist, lasse das Element/Verbindung unverändert."""
+    
     def _explain_errors_with_llm(
         self,
         elements: List[Dict[str, Any]],
         connections: List[Dict[str, Any]],
         errors: Dict[str, Any],
         image_path: Optional[str] = None,
+        debug_map_path: Optional[str] = None,
         model_strategy: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """

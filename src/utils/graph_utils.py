@@ -47,15 +47,25 @@ def calculate_iou(bbox1: Dict[str, float], bbox2: Dict[str, float]) -> float:
     if not is_valid_bbox(bbox1) or not is_valid_bbox(bbox2):
         return 0.0
     
+    # CRITICAL FIX: Convert all bbox values to float to handle string values from JSON
+    bbox1_x = float(bbox1.get('x', 0))
+    bbox1_y = float(bbox1.get('y', 0))
+    bbox1_width = float(bbox1.get('width', 0))
+    bbox1_height = float(bbox1.get('height', 0))
+    bbox2_x = float(bbox2.get('x', 0))
+    bbox2_y = float(bbox2.get('y', 0))
+    bbox2_width = float(bbox2.get('width', 0))
+    bbox2_height = float(bbox2.get('height', 0))
+    
     # Early termination: Quick distance check for non-overlapping boxes
-    center1_x = bbox1['x'] + bbox1['width'] / 2
-    center1_y = bbox1['y'] + bbox1['height'] / 2
-    center2_x = bbox2['x'] + bbox2['width'] / 2
-    center2_y = bbox2['y'] + bbox2['height'] / 2
+    center1_x = bbox1_x + bbox1_width / 2
+    center1_y = bbox1_y + bbox1_height / 2
+    center2_x = bbox2_x + bbox2_width / 2
+    center2_y = bbox2_y + bbox2_height / 2
     
     max_distance = max(
-        (bbox1['width'] + bbox2['width']) / 2,
-        (bbox1['height'] + bbox2['height']) / 2
+        (bbox1_width + bbox2_width) / 2,
+        (bbox1_height + bbox2_height) / 2
     )
     
     distance = ((center1_x - center2_x) ** 2 + (center1_y - center2_y) ** 2) ** 0.5
@@ -65,10 +75,10 @@ def calculate_iou(bbox1: Dict[str, float], bbox2: Dict[str, float]) -> float:
         return 0.0
     
     # Standard IoU calculation for potentially overlapping boxes
-    x1 = max(bbox1['x'], bbox2['x'])
-    y1 = max(bbox1['y'], bbox2['y'])
-    x2 = min(bbox1['x'] + bbox1['width'], bbox2['x'] + bbox2['width'])
-    y2 = min(bbox1['y'] + bbox1['height'], bbox2['y'] + bbox2['height'])
+    x1 = max(bbox1_x, bbox2_x)
+    y1 = max(bbox1_y, bbox2_y)
+    x2 = min(bbox1_x + bbox1_width, bbox2_x + bbox2_width)
+    y2 = min(bbox1_y + bbox1_height, bbox2_y + bbox2_height)
     
     inter_w = max(0, x2 - x1)
     inter_h = max(0, y2 - y1)
@@ -77,8 +87,9 @@ def calculate_iou(bbox1: Dict[str, float], bbox2: Dict[str, float]) -> float:
     if inter == 0:
         return 0.0
     
-    area1 = bbox1['width'] * bbox1['height']
-    area2 = bbox2['width'] * bbox2['height']
+    # CRITICAL FIX: Use already converted float values
+    area1 = bbox1_width * bbox1_height
+    area2 = bbox2_width * bbox2_height
     union = area1 + area2 - inter
     
     return inter / union if union > 0 else 0.0
@@ -258,6 +269,9 @@ class GraphSynthesizer:
                     
                     # Normalize offsets if they're in pixel coordinates
                     # Check if offsets are > 1.0 (likely pixel coords) and normalize
+                    # CRITICAL FIX: Convert to float before comparison
+                    offset_x = float(offset_x) if offset_x is not None else 0.0
+                    offset_y = float(offset_y) if offset_y is not None else 0.0
                     if offset_x > 1.0 or offset_y > 1.0:
                         # Pixel coordinates - normalize them
                         offset_x_norm = offset_x / self.image_width
@@ -269,26 +283,33 @@ class GraphSynthesizer:
                         if 'bbox' in elem and isinstance(elem['bbox'], dict):
                             bbox = elem['bbox']
                             # Check if bbox is in pixel coordinates (> 1.0) and normalize
-                            if bbox.get('x', 0) > 1.0 or bbox.get('y', 0) > 1.0:
+                            # CRITICAL FIX: Convert to float to handle string values from JSON
+                            x_val = float(bbox.get('x', 0)) if bbox.get('x') is not None else 0.0
+                            y_val = float(bbox.get('y', 0)) if bbox.get('y') is not None else 0.0
+                            if x_val > 1.0 or y_val > 1.0:
                                 # Pixel coordinates - normalize first
-                                bbox['x'] = bbox.get('x', 0) / self.image_width
-                                bbox['y'] = bbox.get('y', 0) / self.image_height
-                                bbox['width'] = bbox.get('width', 0) / self.image_width
-                                bbox['height'] = bbox.get('height', 0) / self.image_height
+                                # CRITICAL FIX: Convert to float before division
+                                bbox['x'] = float(bbox.get('x', 0)) / self.image_width
+                                bbox['y'] = float(bbox.get('y', 0)) / self.image_height
+                                bbox['width'] = float(bbox.get('width', 0)) / self.image_width
+                                bbox['height'] = float(bbox.get('height', 0)) / self.image_height
                                 logger.debug(f"Normalized pixel bbox to normalized coords for element {elem.get('id', 'unknown')}")
                             
                             # Add tile offset (now both in normalized coordinates)
-                            bbox['x'] = bbox.get('x', 0) + offset_x
-                            bbox['y'] = bbox.get('y', 0) + offset_y
+                            # CRITICAL FIX: Convert to float before addition
+                            bbox['x'] = float(bbox.get('x', 0)) + offset_x
+                            bbox['y'] = float(bbox.get('y', 0)) + offset_y
                             
                             # Ensure normalized values stay in [0, 1] range
-                            bbox['x'] = max(0.0, min(1.0, bbox['x']))
-                            bbox['y'] = max(0.0, min(1.0, bbox['y']))
+                            # CRITICAL FIX: Convert to float before comparison
+                            bbox['x'] = max(0.0, min(1.0, float(bbox.get('x', 0))))
+                            bbox['y'] = max(0.0, min(1.0, float(bbox.get('y', 0))))
                             # Ensure width/height don't exceed bounds
-                            max_width = 1.0 - bbox['x']
-                            max_height = 1.0 - bbox['y']
-                            bbox['width'] = max(0.0, min(max_width, bbox.get('width', 0)))
-                            bbox['height'] = max(0.0, min(max_height, bbox.get('height', 0)))
+                            # CRITICAL FIX: Convert to float before calculation
+                            max_width = 1.0 - float(bbox.get('x', 0))
+                            max_height = 1.0 - float(bbox.get('y', 0))
+                            bbox['width'] = max(0.0, min(max_width, float(bbox.get('width', 0))))
+                            bbox['height'] = max(0.0, min(max_height, float(bbox.get('height', 0))))
                             
                             # Adjust connection coordinates if they reference this element
                             element_id = elem.get('id')
@@ -302,14 +323,16 @@ class GraphSynthesizer:
                                             # Adjust first/last point to element center
                                             if conn.get('from_id') == element_id and len(polyline) > 0:
                                                 # Adjust start point to element center
-                                                el_center_x = bbox['x'] + bbox['width'] / 2
-                                                el_center_y = bbox['y'] + bbox['height'] / 2
+                                                # CRITICAL FIX: Convert to float before arithmetic
+                                                el_center_x = float(bbox.get('x', 0)) + float(bbox.get('width', 0)) / 2
+                                                el_center_y = float(bbox.get('y', 0)) + float(bbox.get('height', 0)) / 2
                                                 polyline[0] = [el_center_x, el_center_y]
                                             
                                             if conn.get('to_id') == element_id and len(polyline) > 0:
                                                 # Adjust end point to element center
-                                                el_center_x = bbox['x'] + bbox['width'] / 2
-                                                el_center_y = bbox['y'] + bbox['height'] / 2
+                                                # CRITICAL FIX: Convert to float before arithmetic
+                                                el_center_x = float(bbox.get('x', 0)) + float(bbox.get('width', 0)) / 2
+                                                el_center_y = float(bbox.get('y', 0)) + float(bbox.get('height', 0)) / 2
                                                 polyline[-1] = [el_center_x, el_center_y]
                                             
                                             conn['polyline'] = polyline
@@ -391,8 +414,9 @@ class GraphSynthesizer:
                             iou = calculate_iou(elem['bbox'], unique_elem['bbox'])
                             if iou >= 0.3:  # Same label + high IoU = duplicate
                                 # Keep better version
-                                elem_precision = elem.get('confidence', 0.5) / max(elem['bbox'].get('width', 1) * elem['bbox'].get('height', 1), 0.001)
-                                unique_precision = unique_elem.get('confidence', 0.5) / max(unique_elem['bbox'].get('width', 1) * unique_elem['bbox'].get('height', 1), 0.001)
+                                # CRITICAL FIX: Convert to float before multiplication
+                                elem_precision = elem.get('confidence', 0.5) / max(float(elem['bbox'].get('width', 1)) * float(elem['bbox'].get('height', 1)), 0.001)
+                                unique_precision = unique_elem.get('confidence', 0.5) / max(float(unique_elem['bbox'].get('width', 1)) * float(unique_elem['bbox'].get('height', 1)), 0.001)
                                 if elem_precision > unique_precision:
                                     unique_elements.remove(unique_elem)
                                     unique_elements.append(elem)
@@ -473,7 +497,7 @@ class GraphSynthesizer:
                 class_elements,
                 key=lambda e: (
                     e.get('confidence', 0.5) * 
-                    (e.get('bbox', {}).get('width', 0) * e.get('bbox', {}).get('height', 0))
+                    (float(e.get('bbox', {}).get('width', 0)) * float(e.get('bbox', {}).get('height', 0)))
                 ),
                 reverse=True
             )
@@ -484,21 +508,31 @@ class GraphSynthesizer:
                 
                 # Check for matches with existing elements using optimized search
                 matched = False
-                elem_center_x = elem['bbox']['x'] + elem['bbox']['width'] / 2
-                elem_center_y = elem['bbox']['y'] + elem['bbox']['height'] / 2
+                # CRITICAL FIX: Convert to float before arithmetic operations
+                elem_bbox_x = float(elem['bbox'].get('x', 0))
+                elem_bbox_y = float(elem['bbox'].get('y', 0))
+                elem_bbox_width = float(elem['bbox'].get('width', 0))
+                elem_bbox_height = float(elem['bbox'].get('height', 0))
+                elem_center_x = elem_bbox_x + elem_bbox_width / 2
+                elem_center_y = elem_bbox_y + elem_bbox_height / 2
                 
                 for existing_id, existing_elem in self.final_elements.items():
                     if 'bbox' not in existing_elem or not is_valid_bbox(existing_elem['bbox']):
                         continue
                     
                     # Quick distance check before IoU calculation (optimization)
-                    existing_center_x = existing_elem['bbox']['x'] + existing_elem['bbox']['width'] / 2
-                    existing_center_y = existing_elem['bbox']['y'] + existing_elem['bbox']['height'] / 2
+                    # CRITICAL FIX: Convert to float before arithmetic operations
+                    existing_bbox_x = float(existing_elem['bbox'].get('x', 0))
+                    existing_bbox_y = float(existing_elem['bbox'].get('y', 0))
+                    existing_bbox_width = float(existing_elem['bbox'].get('width', 0))
+                    existing_bbox_height = float(existing_elem['bbox'].get('height', 0))
+                    existing_center_x = existing_bbox_x + existing_bbox_width / 2
+                    existing_center_y = existing_bbox_y + existing_bbox_height / 2
                     
                     distance = ((elem_center_x - existing_center_x) ** 2 + (elem_center_y - existing_center_y) ** 2) ** 0.5
                     max_bbox_size = max(
-                        elem['bbox']['width'] + elem['bbox']['height'],
-                        existing_elem['bbox']['width'] + existing_elem['bbox']['height']
+                        elem_bbox_width + elem_bbox_height,
+                        existing_bbox_width + existing_bbox_height
                     )
                     
                     # Skip if too far apart (optimization)
@@ -511,8 +545,9 @@ class GraphSynthesizer:
                         # Precision = (Confidence * IoU) / BBox_Area
                         # Higher precision = better (smaller area, higher confidence)
                         
-                        elem_bbox_area = elem['bbox'].get('width', 0) * elem['bbox'].get('height', 0)
-                        existing_bbox_area = existing_elem['bbox'].get('width', 0) * existing_elem['bbox'].get('height', 0)
+                        # CRITICAL FIX: Convert to float before multiplication
+                        elem_bbox_area = float(elem['bbox'].get('width', 0)) * float(elem['bbox'].get('height', 0))
+                        existing_bbox_area = float(existing_elem['bbox'].get('width', 0)) * float(existing_elem['bbox'].get('height', 0))
                         
                         elem_confidence = elem.get('confidence', 0.5)
                         existing_confidence = existing_elem.get('confidence', 0.5)
@@ -576,13 +611,14 @@ def match_polylines_to_connections(
             to_el['bbox']
         )
 
+        # CRITICAL FIX: Convert to float before arithmetic operations
         start_point = (
-            start_port_bbox['x'] + start_port_bbox['width'] / 2,
-            start_port_bbox['y'] + start_port_bbox['height'] / 2
+            float(start_port_bbox.get('x', 0)) + float(start_port_bbox.get('width', 0)) / 2,
+            float(start_port_bbox.get('y', 0)) + float(start_port_bbox.get('height', 0)) / 2
         )
         end_point = (
-            end_port_bbox['x'] + end_port_bbox['width'] / 2,
-            end_port_bbox['y'] + end_port_bbox['height'] / 2
+            float(end_port_bbox.get('x', 0)) + float(end_port_bbox.get('width', 0)) / 2,
+            float(end_port_bbox.get('y', 0)) + float(end_port_bbox.get('height', 0)) / 2
         )
 
         best_polyline = None

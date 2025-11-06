@@ -24,20 +24,31 @@ class SymbolLibrary:
     Manages a library of visual symbols with embeddings for similarity search.
     """
     
-    def __init__(self, llm_client: Any, learning_db_path: Optional[Path] = None):
+    def __init__(
+        self, 
+        llm_client: Any, 
+        learning_db_path: Optional[Path] = None,
+        images_dir: Optional[Path] = None
+    ):
         """
         Initialize Symbol Library.
         
         Args:
             llm_client: LLM client for generating image embeddings
             learning_db_path: Optional path to learning database for persistence
+            images_dir: Optional directory for storing symbol images (for viewshots)
         """
         self.llm_client = llm_client
         self.learning_db_path = learning_db_path
+        self.images_dir = images_dir
         self.symbols: Dict[str, Dict[str, Any]] = {}
         self.embeddings: Dict[str, np.ndarray] = {}
         self._embedding_matrix: Optional[np.ndarray] = None
         self._symbol_ids: List[str] = []
+        
+        # Create images directory if provided
+        if self.images_dir:
+            self.images_dir.mkdir(parents=True, exist_ok=True)
         
         # Load symbols from learning database if available
         if learning_db_path:
@@ -71,10 +82,24 @@ class SymbolLibrary:
                 return False
             
             # Store symbol data
+            image_path = None
+            if self.images_dir:
+                # Save image to disk for viewshot generation
+                type_dir_name = element_type.lower().replace(' ', '_')
+                type_dir = self.images_dir / type_dir_name
+                type_dir.mkdir(exist_ok=True)
+                # CRITICAL: symbol_id already contains OCR label + type + UUID
+                # Format: {ocr_label}_{type}_{short_uuid} or {type}_{uuid}
+                # This makes filenames meaningful for the AI
+                image_path = type_dir / f"{symbol_id}.png"
+                image.save(image_path)
+                logger.debug(f"Saved symbol image: {image_path}")
+            
             self.symbols[symbol_id] = {
                 'element_type': element_type,
                 'metadata': metadata or {},
-                'added_timestamp': datetime.now().isoformat()
+                'added_timestamp': datetime.now().isoformat(),
+                'image_path': str(image_path) if image_path else None
             }
             
             self.embeddings[symbol_id] = np.array(embedding)
@@ -204,7 +229,8 @@ class SymbolLibrary:
                     self.symbols[symbol_id] = {
                         'element_type': symbol_data.get('element_type', 'Unknown'),
                         'metadata': symbol_data.get('metadata', {}),
-                        'added_timestamp': symbol_data.get('added_timestamp', datetime.now().isoformat())
+                        'added_timestamp': symbol_data.get('added_timestamp', datetime.now().isoformat()),
+                        'image_path': symbol_data.get('image_path')  # Restore image path for viewshot generation
                     }
                     
                     # Restore embedding (stored as list in JSON)
@@ -259,7 +285,8 @@ class SymbolLibrary:
                         'element_type': symbol_info.get('element_type', 'Unknown'),
                         'metadata': symbol_info.get('metadata', {}),
                         'added_timestamp': symbol_info.get('added_timestamp', datetime.now().isoformat()),
-                        'embedding': embedding.tolist()  # Convert numpy array to list for JSON
+                        'embedding': embedding.tolist(),  # Convert numpy array to list for JSON
+                        'image_path': symbol_info.get('image_path')  # Save image path for viewshot generation
                     }
             
             # Update learning database

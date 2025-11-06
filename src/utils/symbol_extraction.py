@@ -419,17 +419,26 @@ def refine_symbol_bbox_with_cascade(
 def refine_symbol_bbox_with_cv(
     symbol_image: Image.Image,
     initial_bbox: Optional[Dict[str, float]] = None,
-    use_anchor_method: bool = True
+    use_anchor_method: bool = True,
+    text_regions: Optional[List[Dict[str, int]]] = None,
+    include_text: bool = False
 ) -> Dict[str, float]:
     """
     Refine symbol bounding box using Computer Vision with anchor-based centering.
     
     Uses anchor method: Find contours, then center and crop symbol precisely.
     
+    STRATEGIC TEXT-INTEGRATION:
+    - For Viewshots: include_text=False (NUR Symbol, Text lenkt ab)
+    - For Pretraining: include_text=True (Symbol + Text, OCR braucht Text)
+    - For Legend/Diagramm: include_text=False (Text wird separat extrahiert)
+    
     Args:
         symbol_image: PIL Image of symbol
         initial_bbox: Optional initial bbox hint
         use_anchor_method: Use anchor-based centering (finds contours, centers symbol)
+        text_regions: Optional list of text regions (for Pretraining)
+        include_text: If True, expand bbox to include text regions (ONLY for Pretraining)
         
     Returns:
         Refined bounding box (normalized 0-1)
@@ -504,6 +513,32 @@ def refine_symbol_bbox_with_cv(
             y = max(0, int(y - padding))
             w = min(img_width - x, int(w + 2 * padding))
             h = min(img_height - y, int(h + 2 * padding))
+            
+            # STRATEGIC TEXT-INTEGRATION: Only for Pretraining
+            if include_text and text_regions and len(text_regions) > 0:
+                # Expand bbox to include text regions (ONLY for Pretraining)
+                min_x = x
+                min_y = y
+                max_x = x + w
+                max_y = y + h
+                
+                for text_region in text_regions:
+                    tx = text_region.get('x', 0)
+                    ty = text_region.get('y', 0)
+                    tw = text_region.get('width', 0)
+                    th = text_region.get('height', 0)
+                    
+                    # Expand bbox to include text
+                    min_x = min(min_x, tx)
+                    min_y = min(min_y, ty)
+                    max_x = max(max_x, tx + tw)
+                    max_y = max(max_y, ty + th)
+                
+                # Update bbox (ensure within image bounds)
+                x = max(0, min_x)
+                y = max(0, min_y)
+                w = min(img_width - x, max_x - x)
+                h = min(img_height - y, max_y - y)
             
             # Normalize
             return {

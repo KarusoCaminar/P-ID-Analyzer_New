@@ -334,7 +334,7 @@ class OptimizedGUI(tk.Tk):
         
         self.truth_mode_button = tk.Button(
             truth_frame,
-            text="❌ Truth Mode: OFF",
+            text="[OFF] Truth Mode: OFF",
             font=("Arial", 10, "bold"),
             bg="#ff4444",
             fg="white",
@@ -1095,7 +1095,7 @@ Weitere Informationen:
                                 )
                             else:
                                 self.truth_mode_button.config(
-                                    text="❌ Truth Mode: OFF",
+                                    text="[OFF] Truth Mode: OFF",
                                     bg="#ff4444",
                                     fg="white"
                                 )

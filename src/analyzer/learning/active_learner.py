@@ -159,6 +159,12 @@ class ActiveLearner:
             logger.info(f"Pretraining complete: {report['symbols_learned']} new, "
                        f"{report['symbols_updated']} updated, {report['duplicates_found']} duplicates")
             
+            # AUTOMATIC: Generate viewshots from library after pretraining
+            if report['symbols_learned'] > 0 or report['symbols_updated'] > 0:
+                logger.info("Generating viewshots from symbol library...")
+                viewshot_stats = self.generate_viewshots_from_library()
+                logger.info(f"Viewshots generated: {viewshot_stats}")
+            
         except Exception as e:
             logger.error(f"Error in learn_from_pretraining_symbols: {e}", exc_info=True)
             report['errors'].append(str(e))
@@ -521,8 +527,28 @@ class ActiveLearner:
                     # Crop symbol with padding
                     symbol_crop = collection_image.crop((x_pad, y_pad, x_pad + w_pad, y_pad + h_pad))
                     
-                    # Refine bbox with CV (remove white space)
-                    refined_bbox = refine_symbol_bbox_with_cv(symbol_crop)
+                    # Get text regions from CV extraction (for Pretraining)
+                    text_regions = cv_symbol.get('text_regions', [])
+                    # Convert text regions to crop-relative coordinates
+                    crop_text_regions = []
+                    if text_regions:
+                        for text_region in text_regions:
+                            # Convert to crop-relative coordinates
+                            crop_text_region = {
+                                'x': max(0, text_region.get('x', 0) - x_pad),
+                                'y': max(0, text_region.get('y', 0) - y_pad),
+                                'width': text_region.get('width', 0),
+                                'height': text_region.get('height', 0)
+                            }
+                            crop_text_regions.append(crop_text_region)
+                    
+                    # Refine bbox with CV (remove white space) + include text for Pretraining
+                    from src.utils.symbol_extraction import refine_symbol_bbox_with_cv
+                    refined_bbox = refine_symbol_bbox_with_cv(
+                        symbol_crop,
+                        text_regions=crop_text_regions,
+                        include_text=True  # PRETRAINING: Include text for OCR
+                    )
                     
                     # Apply refinement to crop
                     crop_w, crop_h = symbol_crop.size
@@ -534,44 +560,85 @@ class ActiveLearner:
                     if refine_w > 0 and refine_h > 0:
                         symbol_crop = symbol_crop.crop((refine_x, refine_y, refine_x + refine_w, refine_y + refine_h))
                     
-                    # STEP 3: LLM for type detection and label extraction
+                    # STEP 3: OPTIMIZED - OCR for label extraction + LLM for type detection
                     # Save refined crop temporarily
                     temp_crop = tempfile.NamedTemporaryFile(suffix='.png', delete=False)
                     symbol_crop.save(temp_crop.name)
                     temp_crop_path = temp_crop.name
                     
-                    # LLM prompt for type detection
-                    llm_prompt = """Analyze this P&ID symbol image and extract:
-1. Element type (e.g., Pump, Valve, Tank, Volume Flow Sensor, Mixer, Source, Sink)
-2. Label if visible (e.g., "P-101", "V-42", "FT-10")
+                    # OPTIMIZATION: Use OCR for label extraction (more accurate than LLM for text)
+                    label = f"{collection_path.stem}_sym_{idx}"
+                    try:
+                        # Try OCR first (Tesseract)
+                        try:
+                            import pytesseract
+                            import cv2
+                            import numpy as np
+                            
+                            # Preprocess for OCR
+                            ocr_img = cv2.imread(temp_crop_path)
+                            if ocr_img is not None:
+                                gray = cv2.cvtColor(ocr_img, cv2.COLOR_BGR2GRAY)
+                                # Apply thresholding for better OCR
+                                _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+                                
+                                # Extract text using Tesseract
+                                ocr_text = pytesseract.image_to_string(thresh, lang='eng', config='--psm 7')
+                                ocr_text = ocr_text.strip()
+                                
+                                # Filter valid labels (P&ID labels are typically short, alphanumeric)
+                                if ocr_text and len(ocr_text) < 50 and any(c.isalnum() for c in ocr_text):
+                                    # Clean up OCR text (remove special chars, keep alphanumeric and dashes)
+                                    cleaned_label = ''.join(c for c in ocr_text if c.isalnum() or c in ['-', '_', '.'])
+                                    if cleaned_label:
+                                        label = cleaned_label
+                                        logger.debug(f"OCR extracted label: {label}")
+                        except ImportError:
+                            logger.debug("pytesseract not available, skipping OCR")
+                        except Exception as e:
+                            logger.debug(f"OCR failed: {e}, falling back to LLM")
+                    except Exception as e:
+                        logger.debug(f"Error in OCR step: {e}")
+                    
+                    # LLM for type detection (more accurate than OCR for symbol recognition)
+                    llm_prompt = """Analyze this P&ID symbol image and identify the element type.
 
-CRITICAL: Use EXACT type names (Valve, Pump, Volume Flow Sensor, etc.) - CASE-SENSITIVE.
+CRITICAL: Use EXACT type names (Valve, Pump, Volume Flow Sensor, Mixer, Source, Sink, Tank, Storage, Heat Exchanger, Filter, Separator, Compressor, Turbine, Reactor, Sample Point) - CASE-SENSITIVE.
 
 Return as JSON:
 {
-  "type": "Valve",
-  "label": "V-101"
-}"""
+  "type": "Valve"
+}
+
+If you cannot identify the type, return {"type": "Unknown"}."""
                     
-                    llm_response = self.llm_client.call_model(
-                        model_info,
-                        system_prompt="You are an expert in P&ID symbol identification.",
-                        user_prompt=llm_prompt,
-                        image_path=temp_crop_path
-                    )
+                    # Use call_llm (newer method) or call_model (older method) as fallback
+                    if hasattr(self.llm_client, 'call_llm'):
+                        llm_response = self.llm_client.call_llm(
+                            model_info,
+                            system_prompt="You are an expert in P&ID symbol identification.",
+                            user_prompt=llm_prompt,
+                            image_path=temp_crop_path,
+                            expected_json_keys=["type"]
+                        )
+                    else:
+                        # Fallback to older call_model method
+                        llm_response = self.llm_client.call_model(
+                            model_info,
+                            system_prompt="You are an expert in P&ID symbol identification.",
+                            user_prompt=llm_prompt,
+                            image_path=temp_crop_path
+                        )
                     
                     # Parse LLM response
                     element_type = 'Unknown'
-                    label = f"{collection_path.stem}_sym_{idx}"
                     
                     if isinstance(llm_response, dict):
                         element_type = llm_response.get('type', 'Unknown')
-                        label = llm_response.get('label', label)
                     elif isinstance(llm_response, str):
                         try:
                             llm_data = json.loads(llm_response)
                             element_type = llm_data.get('type', 'Unknown')
-                            label = llm_data.get('label', label)
                         except json.JSONDecodeError:
                             logger.debug(f"Could not parse LLM response for symbol {idx}")
                     
@@ -642,12 +709,23 @@ CRITICAL: Extract ALL visible symbols. Use EXACT type names (Valve, Pump, Volume
             system_prompt = """You are an expert in P&ID symbol detection and segmentation.
 Extract ALL individual symbols from this collection image with precise bounding boxes."""
             
-            response = self.llm_client.call_model(
-                model_info,
-                system_prompt=system_prompt,
-                user_prompt=prompt,
-                image_path=temp_path
-            )
+            # Use call_llm (newer method) or call_model (older method) as fallback
+            if hasattr(self.llm_client, 'call_llm'):
+                response = self.llm_client.call_llm(
+                    model_info,
+                    system_prompt=system_prompt,
+                    user_prompt=prompt,
+                    image_path=temp_path,
+                    expected_json_keys=["symbols"]
+                )
+            else:
+                # Fallback to older call_model method
+                response = self.llm_client.call_model(
+                    model_info,
+                    system_prompt=system_prompt,
+                    user_prompt=prompt,
+                    image_path=temp_path
+                )
             
             # Parse response
             if isinstance(response, str):
@@ -728,12 +806,23 @@ Return as JSON with keys: type, features, label."""
                 image.save(temp_file.name)
                 image_path = temp_file.name
             
-            response = self.llm_client.call_model(
-                model_info,
-                system_prompt="You are an expert in P&ID diagram analysis.",
-                user_prompt=prompt,
-                image_path=image_path
-            )
+            # Use call_llm instead of call_model (call_model is deprecated)
+            if hasattr(self.llm_client, 'call_llm'):
+                response = self.llm_client.call_llm(
+                    model_info,
+                    system_prompt="You are an expert in P&ID diagram analysis.",
+                    user_prompt=prompt,
+                    image_path=image_path,
+                    expected_json_keys=["type", "features", "label"]
+                )
+            else:
+                # Fallback to older call_model method
+                response = self.llm_client.call_model(
+                    model_info,
+                    system_prompt="You are an expert in P&ID diagram analysis.",
+                    user_prompt=prompt,
+                    image_path=image_path
+                )
             
             if isinstance(response, dict):
                 return response
@@ -820,14 +909,31 @@ Return as JSON with keys: type, features, label."""
                     # New symbol - extract info and add
                     symbol_info = self._extract_symbol_info(symbol_image, model_info)
                     if not symbol_info:
-                        # Fallback: use label as type hint
-                        element_type = label.split('-')[0] if '-' in label else 'Unknown'
+                        # Fallback: use 'Unknown' instead of parsing label (label might be "Pid-symbols-PDF_sammlung_sym_0")
+                        element_type = 'Unknown'
                         symbol_info = {'type': element_type, 'label': label}
                     else:
                         element_type = symbol_info.get('type', 'Unknown')
                     
-                    # Generate unique ID
-                    symbol_id = f"sym_{uuid.uuid4().hex[:12]}"
+                    # Generate unique ID with OCR label if available
+                    # CRITICAL: Use OCR label in filename so AI knows what the symbol means
+                    # Format: {ocr_label}_{type}_{short_uuid}.png
+                    # Example: "P-201_Valve_abc123.png" or "FT-10_Volume_Flow_Sensor_def456.png"
+                    # Check if label is generic (starts with collection name + "_sym_")
+                    collection_stem = Path(source_name).stem if source_name else ""
+                    if label and not (collection_stem and label.startswith(f"{collection_stem}_sym_")):
+                        # OCR extracted a real label (e.g., "P-201", "FT-10", "V-101")
+                        # Sanitize label for filename (remove special chars, limit length)
+                        safe_label = ''.join(c for c in label if c.isalnum() or c in ['-', '_', '.'])[:20]
+                        # Format: {label}_{type}_{short_uuid}
+                        type_safe = element_type.lower().replace(' ', '_')
+                        symbol_id = f"{safe_label}_{type_safe}_{uuid.uuid4().hex[:8]}"
+                        logger.debug(f"Using OCR label in symbol ID: {symbol_id}")
+                    else:
+                        # Fallback: Use type + UUID (no OCR label available)
+                        type_safe = element_type.lower().replace(' ', '_')
+                        symbol_id = f"{type_safe}_{uuid.uuid4().hex[:12]}"
+                        logger.debug(f"Using fallback symbol ID (no OCR label): {symbol_id}")
                     
                     metadata = {
                         'source': 'pretraining',
@@ -1072,6 +1178,145 @@ Return as JSON with keys: type, features, label."""
             self.knowledge_manager.save_learning_database()
         except Exception as e:
             logger.error(f"Error storing adaptation: {e}", exc_info=True)
+    
+    def generate_viewshots_from_library(
+        self,
+        output_dir: Optional[Path] = None,
+        max_per_type: int = 5,
+        symbol_only: bool = True
+    ) -> Dict[str, int]:
+        """
+        Generate viewshots from symbol library for LLM prompt integration.
+        
+        This method extracts the best examples from the symbol library and saves them
+        as viewshots organized by type. These viewshots are used as visual references
+        in LLM prompts to improve type recognition accuracy.
+        
+        STRATEGIC: For Viewshots, we want NUR Symbol (without text) because:
+        - LLM should focus on Symbol-Form for Type-Recognition
+        - Text is irrelevant and can distract from visual pattern matching
+        
+        Args:
+            output_dir: Output directory for viewshots (default: training_data/viewshot_examples)
+            max_per_type: Maximum number of viewshots per type (default: 5)
+            symbol_only: If True, crop to symbol only (remove text) - for Viewshots
+                        If False, keep symbol + text - for Pretraining
+            
+        Returns:
+            Dictionary with viewshot generation statistics
+        """
+        stats = {}
+        
+        try:
+            # Get output directory
+            if output_dir is None:
+                # Get from config or use default
+                viewshot_dir = self.config.get('paths', {}).get('viewshot_examples_dir', 'training_data/viewshot_examples')
+                output_dir = Path(viewshot_dir)
+            
+            output_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Get all symbols from library
+            all_symbols = self.symbol_library.get_all_symbols()
+            
+            if not all_symbols:
+                logger.warning("Symbol library is empty. Cannot generate viewshots.")
+                return stats
+            
+            # Group symbols by type
+            symbols_by_type: Dict[str, List[Tuple[str, Dict[str, Any]]]] = {}
+            for symbol_id, symbol_data in all_symbols.items():
+                element_type = symbol_data.get('element_type', 'Unknown')
+                if element_type == 'Unknown':
+                    continue
+                
+                if element_type not in symbols_by_type:
+                    symbols_by_type[element_type] = []
+                symbols_by_type[element_type].append((symbol_id, symbol_data))
+            
+            logger.info(f"Generating viewshots for {len(symbols_by_type)} types from {len(all_symbols)} symbols...")
+            
+            # Generate viewshots for each type
+            for element_type, type_symbols in symbols_by_type.items():
+                # Take first N symbols (or all if less than max_per_type)
+                viewshot_symbols = type_symbols[:max_per_type]
+                
+                # Normalize type name for directory
+                type_dir_name = element_type.lower().replace(' ', '_')
+                type_dir = output_dir / type_dir_name
+                type_dir.mkdir(exist_ok=True)
+                
+                # Copy or link symbol images to viewshot directory
+                for idx, (symbol_id, symbol_data) in enumerate(viewshot_symbols):
+                    try:
+                        # Get image path from symbol data
+                        image_path_str = symbol_data.get('image_path')
+                        
+                        if image_path_str and Path(image_path_str).exists():
+                            # Load symbol image
+                            source_path = Path(image_path_str)
+                            symbol_image = Image.open(source_path)
+                            
+                            # STRATEGIC: For Viewshots, remove text and keep only symbol
+                            if symbol_only:
+                                from src.utils.symbol_extraction import refine_symbol_bbox_with_cv
+                                
+                                # Get symbol-only bbox (without text)
+                                symbol_only_bbox = refine_symbol_bbox_with_cv(
+                                    symbol_image,
+                                    include_text=False  # NUR Symbol für Viewshots
+                                )
+                                
+                                # Crop to symbol only
+                                img_w, img_h = symbol_image.size
+                                crop_x = int(symbol_only_bbox['x'] * img_w)
+                                crop_y = int(symbol_only_bbox['y'] * img_h)
+                                crop_w = int(symbol_only_bbox['width'] * img_w)
+                                crop_h = int(symbol_only_bbox['height'] * img_h)
+                                
+                                # Ensure valid crop
+                                if crop_w > 0 and crop_h > 0:
+                                    symbol_image = symbol_image.crop((
+                                        crop_x, crop_y, 
+                                        crop_x + crop_w, 
+                                        crop_y + crop_h
+                                    ))
+                                    logger.debug(f"Cropped viewshot to symbol-only: {crop_w}x{crop_h}")
+                            
+                            # Save viewshot with meaningful name
+                            # Try to use OCR label from symbol metadata if available
+                            metadata = symbol_data.get('metadata', {})
+                            ocr_label = metadata.get('label', '')
+                            
+                            if ocr_label and not ocr_label.startswith('Pid-symbols-PDF_sammlung_sym_'):
+                                # Use OCR label in viewshot filename
+                                safe_label = ''.join(c for c in ocr_label if c.isalnum() or c in ['-', '_', '.'])[:15]
+                                target_path = type_dir / f"{safe_label}_{type_dir_name}_{idx:04d}.png"
+                            else:
+                                # Fallback to generic name
+                                target_path = type_dir / f"{type_dir_name}_{idx:04d}.png"
+                            
+                            symbol_image.save(target_path)
+                            logger.debug(f"Saved viewshot: {target_path.name}")
+                            stats[element_type] = stats.get(element_type, 0) + 1
+                        else:
+                            # Image not saved - need to load from learning_db or regenerate
+                            # For now, skip (images should be saved during add_symbol)
+                            logger.warning(f"Image path not found for symbol {symbol_id}, skipping viewshot")
+                            continue
+                        
+                    except Exception as e:
+                        logger.warning(f"Error generating viewshot for {symbol_id}: {e}")
+                        continue
+                
+                logger.info(f"Generated {stats.get(element_type, 0)} viewshots for {element_type}")
+            
+            logger.info(f"Viewshot generation complete: {sum(stats.values())} viewshots generated for {len(stats)} types")
+            
+        except Exception as e:
+            logger.error(f"Error generating viewshots from library: {e}", exc_info=True)
+        
+        return stats
     
     def get_learning_stats(self) -> Dict[str, Any]:
         """Get learning statistics."""
