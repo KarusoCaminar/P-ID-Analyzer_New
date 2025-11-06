@@ -46,6 +46,11 @@ class MultiLevelCache:
         self.memory_ttl = timedelta(hours=memory_ttl_hours)
         self.memory_lock = threading.RLock()
         
+        # Cache statistics counters
+        self._total_requests = 0
+        self._memory_hits = 0
+        self._disk_hits = 0
+        
         # Level 2: Disk cache (persistent)
         size_limit_bytes = disk_size_gb * 1024 * 1024 * 1024
         self.disk_cache = diskcache.Cache(str(self.cache_dir), size_limit=size_limit_bytes)
@@ -65,6 +70,10 @@ class MultiLevelCache:
         Returns:
             Cached value or None
         """
+        # Increment total requests counter (within lock for thread safety)
+        with self.memory_lock:
+            self._total_requests += 1
+        
         # Level 1: Check memory cache first (fast)
         with self.memory_lock:
             if key in self.memory_cache:
@@ -75,6 +84,7 @@ class MultiLevelCache:
                     # Move to end (most recently used)
                     self.memory_cache.move_to_end(key)
                     logger.debug(f"Memory cache HIT for key: {key[:16]}...")
+                    self._memory_hits += 1  # Increment memory hit counter
                     return value
                 else:
                     # Expired, remove from memory
@@ -87,6 +97,7 @@ class MultiLevelCache:
             # Promote to memory cache
             with self.memory_lock:
                 self._add_to_memory(key, disk_value)
+                self._disk_hits += 1  # Increment disk hit counter
             logger.debug(f"Disk cache HIT (promoted to memory) for key: {key[:16]}...")
             return disk_value
         
@@ -169,6 +180,9 @@ class MultiLevelCache:
         """Get cache statistics."""
         with self.memory_lock:
             memory_size = len(self.memory_cache)
+            total_requests = self._total_requests
+            memory_hits = self._memory_hits
+            disk_hits = self._disk_hits
         
         disk_size = len(self.disk_cache)
         
@@ -176,8 +190,11 @@ class MultiLevelCache:
             'memory_entries': memory_size,
             'memory_max': self.memory_size,
             'disk_entries': disk_size,
-            'memory_hit_rate': getattr(self, '_memory_hits', 0) / max(getattr(self, '_total_requests', 1), 1),
-            'disk_hit_rate': getattr(self, '_disk_hits', 0) / max(getattr(self, '_total_requests', 1), 1)
+            'total_requests': total_requests,
+            'memory_hits': memory_hits,
+            'disk_hits': disk_hits,
+            'memory_hit_rate': memory_hits / max(total_requests, 1),
+            'disk_hit_rate': disk_hits / max(total_requests, 1)
         }
 
 

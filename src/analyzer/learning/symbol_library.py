@@ -8,10 +8,13 @@ Provides functionality for:
 """
 
 import logging
+import json
+from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple
 from PIL import Image
 import numpy as np
 from sklearn.metrics.pairwise import cosine_similarity
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
@@ -21,25 +24,32 @@ class SymbolLibrary:
     Manages a library of visual symbols with embeddings for similarity search.
     """
     
-    def __init__(self, llm_client: Any):
+    def __init__(self, llm_client: Any, learning_db_path: Optional[Path] = None):
         """
         Initialize Symbol Library.
         
         Args:
             llm_client: LLM client for generating image embeddings
+            learning_db_path: Optional path to learning database for persistence
         """
         self.llm_client = llm_client
+        self.learning_db_path = learning_db_path
         self.symbols: Dict[str, Dict[str, Any]] = {}
         self.embeddings: Dict[str, np.ndarray] = {}
         self._embedding_matrix: Optional[np.ndarray] = None
         self._symbol_ids: List[str] = []
+        
+        # Load symbols from learning database if available
+        if learning_db_path:
+            self.load_from_learning_db()
     
     def add_symbol(
         self,
         symbol_id: str,
         image: Image.Image,
         element_type: str,
-        metadata: Optional[Dict[str, Any]] = None
+        metadata: Optional[Dict[str, Any]] = None,
+        save_immediately: bool = True
     ) -> bool:
         """
         Add a symbol to the library.
@@ -64,13 +74,17 @@ class SymbolLibrary:
             self.symbols[symbol_id] = {
                 'element_type': element_type,
                 'metadata': metadata or {},
-                'added_timestamp': logging.time.time() if hasattr(logging, 'time') else None
+                'added_timestamp': datetime.now().isoformat()
             }
             
             self.embeddings[symbol_id] = np.array(embedding)
             self._update_embedding_matrix()
             
-            logger.info(f"Added symbol {symbol_id} to library")
+            # Save to learning database if available (only if requested)
+            if self.learning_db_path and save_immediately:
+                self.save_to_learning_db()
+            
+            logger.debug(f"Added symbol {symbol_id} to library")
             return True
         except Exception as e:
             logger.error(f"Error adding symbol {symbol_id}: {e}", exc_info=True)
@@ -164,5 +178,127 @@ class SymbolLibrary:
     def get_symbol_count(self) -> int:
         """Get the number of symbols in the library."""
         return len(self.symbols)
+    
+    def load_from_learning_db(self) -> int:
+        """
+        Load symbols from learning database.
+        
+        Returns:
+            Number of symbols loaded
+        """
+        if not self.learning_db_path or not self.learning_db_path.exists():
+            return 0
+        
+        try:
+            with open(self.learning_db_path, 'r', encoding='utf-8') as f:
+                learning_db = json.load(f)
+            
+            symbol_library_data = learning_db.get('symbol_library', {})
+            if not symbol_library_data:
+                return 0
+            
+            loaded_count = 0
+            for symbol_id, symbol_data in symbol_library_data.items():
+                try:
+                    # Restore symbol metadata
+                    self.symbols[symbol_id] = {
+                        'element_type': symbol_data.get('element_type', 'Unknown'),
+                        'metadata': symbol_data.get('metadata', {}),
+                        'added_timestamp': symbol_data.get('added_timestamp', datetime.now().isoformat())
+                    }
+                    
+                    # Restore embedding (stored as list in JSON)
+                    embedding_list = symbol_data.get('embedding', [])
+                    if embedding_list:
+                        self.embeddings[symbol_id] = np.array(embedding_list)
+                        loaded_count += 1
+                    else:
+                        logger.warning(f"Symbol {symbol_id} has no embedding, skipping")
+                        
+                except Exception as e:
+                    logger.warning(f"Error loading symbol {symbol_id}: {e}")
+                    continue
+            
+            if loaded_count > 0:
+                self._update_embedding_matrix()
+                logger.info(f"Loaded {loaded_count} symbols from learning database")
+            
+            return loaded_count
+            
+        except Exception as e:
+            logger.warning(f"Error loading symbols from learning database: {e}")
+            return 0
+    
+    def save_to_learning_db(self) -> bool:
+        """
+        Save symbols to learning database.
+        
+        Returns:
+            True if saved successfully, False otherwise
+        """
+        if not self.learning_db_path:
+            return False
+        
+        try:
+            # Load existing learning database
+            learning_db = {}
+            if self.learning_db_path.exists():
+                try:
+                    with open(self.learning_db_path, 'r', encoding='utf-8') as f:
+                        learning_db = json.load(f)
+                except Exception as e:
+                    logger.warning(f"Error reading learning database: {e}")
+                    learning_db = {}
+            
+            # Prepare symbol library data (embeddings as lists for JSON serialization)
+            symbol_library_data = {}
+            for symbol_id, symbol_info in self.symbols.items():
+                embedding = self.embeddings.get(symbol_id)
+                if embedding is not None:
+                    symbol_library_data[symbol_id] = {
+                        'element_type': symbol_info.get('element_type', 'Unknown'),
+                        'metadata': symbol_info.get('metadata', {}),
+                        'added_timestamp': symbol_info.get('added_timestamp', datetime.now().isoformat()),
+                        'embedding': embedding.tolist()  # Convert numpy array to list for JSON
+                    }
+            
+            # Update learning database
+            learning_db['symbol_library'] = symbol_library_data
+            
+            # Write back to file (atomic write with backup)
+            backup_path = self.learning_db_path.with_suffix('.json.bak')
+            if self.learning_db_path.exists():
+                import shutil
+                shutil.copy2(self.learning_db_path, backup_path)
+            
+            with open(self.learning_db_path, 'w', encoding='utf-8') as f:
+                json.dump(learning_db, f, indent=2, ensure_ascii=False)
+            
+            # Remove backup if save successful
+            if backup_path.exists():
+                backup_path.unlink()
+            
+            logger.debug(f"Saved {len(symbol_library_data)} symbols to learning database")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error saving symbols to learning database: {e}", exc_info=True)
+            return False
+    
+    def remove_symbol(self, symbol_id: str) -> bool:
+        """Remove a symbol from the library."""
+        if symbol_id in self.symbols:
+            del self.symbols[symbol_id]
+            if symbol_id in self.embeddings:
+                del self.embeddings[symbol_id]
+            self._update_embedding_matrix()
+            
+            # Save to learning database if available
+            if self.learning_db_path:
+                self.save_to_learning_db()
+            
+            logger.info(f"Removed symbol {symbol_id} from library")
+            return True
+        return False
 
 

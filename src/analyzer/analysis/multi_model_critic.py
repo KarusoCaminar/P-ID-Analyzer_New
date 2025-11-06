@@ -107,7 +107,11 @@ class MultiModelCritic:
             critical_report = self._identify_critical_errors(
                 elements, connections
             )
-            report['critical_errors'] = critical_report.get('errors', [])
+            # FIX: _identify_critical_errors returns a list directly, not a dict
+            if isinstance(critical_report, list):
+                report['critical_errors'] = critical_report
+            else:
+                report['critical_errors'] = critical_report.get('errors', [])
             
             # 4. Generate recommendations
             recommendations = self._generate_recommendations(
@@ -115,7 +119,30 @@ class MultiModelCritic:
             )
             report['recommendations'] = recommendations
             
-            # 5. Calculate validation score
+            # 5. LANGFRISTIGE VERBESSERUNG: Error Explanation durch LLM
+            use_error_explanation = self.config.get('logic_parameters', {}).get('use_error_explanation', True)
+            if use_error_explanation:
+                # Prepare errors dict for explanation
+                errors_dict = {
+                    'missed_elements': [e for e in elements if e.get('id') in [w.get('element_id') for w in report.get('warnings', [])]],
+                    'hallucinated_elements': [e for e in elements if e.get('confidence', 1.0) < 0.3],
+                    'missed_connections': len([c for c in connections if not c.get('from_id') or not c.get('to_id')]),
+                    'hallucinated_connections': len([c for c in connections if c.get('confidence', 1.0) < 0.3])
+                }
+                
+                error_explanation = self._explain_errors_with_llm(
+                    elements,
+                    connections,
+                    errors_dict,
+                    image_path=None,  # Could pass image_path if available
+                    model_strategy=model_strategy
+                )
+                
+                if error_explanation:
+                    report['error_explanation'] = error_explanation
+                    logger.info("Error Explanation: LLM-basierte Fehleranalyse abgeschlossen")
+            
+            # 6. Calculate validation score
             validation_score = self._calculate_validation_score(report)
             report['validation_score'] = validation_score
             
@@ -413,6 +440,157 @@ class MultiModelCritic:
         logger.info(f"Identified {len(critical_errors)} critical errors")
         
         return critical_errors
+    
+    def _explain_errors_with_llm(
+        self,
+        elements: List[Dict[str, Any]],
+        connections: List[Dict[str, Any]],
+        errors: Dict[str, Any],
+        image_path: Optional[str] = None,
+        model_strategy: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """
+        Use LLM to explain why errors occurred and suggest fixes.
+        
+        Args:
+            elements: Detected elements
+            connections: Detected connections
+            errors: Error dictionary with missed/hallucinated elements
+            image_path: Optional path to image for visual context
+            model_strategy: Model strategy configuration
+            
+        Returns:
+            Dictionary with error explanations and suggestions
+        """
+        logger.info("Error Explanation: Analyzing errors with LLM...")
+        
+        import json
+        
+        # Get model info
+        if model_strategy:
+            model_info = model_strategy.get('critic_model_name') or model_strategy.get('meta_model')
+        else:
+            model_info = self.config.get('models', {}).get('Google Gemini 2.5 Pro', {})
+        
+        if not model_info:
+            models_cfg = self.config.get('models', {})
+            model_info = list(models_cfg.values())[0] if models_cfg else {}
+        
+        # Prepare error summary
+        missed_elements = errors.get('missed_elements', [])
+        hallucinated_elements = errors.get('hallucinated_elements', [])
+        missed_connections = errors.get('missed_connections', 0)
+        hallucinated_connections = errors.get('hallucinated_connections', 0)
+        
+        prompt = f"""Du bist ein Experte für P&ID Diagramme und Fehleranalyse. Analysiere warum diese Fehler aufgetreten sind.
+
+**ERKANNTE ELEMENTE:**
+{json.dumps(elements[:20], indent=2, ensure_ascii=False)}  # Limit to 20 for prompt size
+
+**ERKANNTE VERBINDUNGEN:**
+{json.dumps(connections[:20], indent=2, ensure_ascii=False)}  # Limit to 20
+
+**FEHLER:**
+- Verpasste Elemente: {len(missed_elements)}
+- Halluzinierte Elemente: {len(hallucinated_elements)}
+- Verpasste Verbindungen: {missed_connections}
+- Halluzinierte Verbindungen: {hallucinated_connections}
+
+**VERPASSTE ELEMENTE (Beispiele):**
+{json.dumps(missed_elements[:10], indent=2, ensure_ascii=False) if missed_elements else "Keine"}
+
+**HALLUZINIERTE ELEMENTE (Beispiele):**
+{json.dumps(hallucinated_elements[:10], indent=2, ensure_ascii=False) if hallucinated_elements else "Keine"}
+
+**AUFGABE:**
+1. **Fehlerursachen identifizieren**:
+   - Warum wurden Elemente verpasst? (BBox zu groß/zu klein, Confidence zu niedrig, Excluded Zones zu aggressiv?)
+   - Warum wurden Elemente halluziniert? (Confidence zu niedrig, Type-Mismatch?)
+   - Warum wurden Verbindungen verpasst? (IDs nicht normalisiert, Elemente nicht gefunden?)
+
+2. **Verbesserungsvorschläge**:
+   - Was sollte geändert werden? (Confidence Threshold, Excluded Zones, Type-Normalisierung?)
+   - Welche Parameter sollten angepasst werden?
+
+3. **Konkrete Korrekturen**:
+   - Welche Elemente sollten noch einmal analysiert werden?
+   - Welche Verbindungen sollten hinzugefügt werden?
+
+**RETURN FORMAT (JSON):**
+{{
+  "error_analysis": {{
+    "missed_elements_reasons": [
+      {{
+        "element_id": "P-201",
+        "reason": "Confidence zu niedrig (0.65 < 0.6 Threshold)",
+        "suggestion": "Confidence Threshold senken oder Re-Analyse mit höherer Confidence"
+      }}
+    ],
+    "hallucinated_elements_reasons": [
+      {{
+        "element_id": "FT-10",
+        "reason": "Type-Mismatch: 'machine' statt 'Mixer'",
+        "suggestion": "Type-Normalisierung verbessern"
+      }}
+    ],
+    "missing_connections_reasons": [
+      {{
+        "from_id": "P-504",
+        "to_id": "Mixer-M-08",
+        "reason": "IDs nicht normalisiert: 'P-504' vs 'P504'",
+        "suggestion": "ID-Normalisierung vor Connection-Erstellung"
+      }}
+    ]
+  }},
+  "improvement_suggestions": [
+    "Confidence Threshold von 0.6 auf 0.5 senken für mehr Elemente",
+    "Excluded Zones weniger aggressiv (nur bei 100% Overlap ausschließen)",
+    "Type-Normalisierung: 'machine' → 'Mixer' automatisch korrigieren"
+  ],
+  "specific_corrections": [
+    {{
+      "action": "re_analyze_element",
+      "element_id": "P-201",
+      "reason": "Confidence zu niedrig, aber wahrscheinlich korrekt"
+    }}
+  ],
+  "explanation": "Die meisten Fehler entstehen durch: 1) Confidence Threshold zu hoch, 2) ID-Normalisierung fehlt, 3) Type-Mismatch"
+}}
+"""
+        
+        try:
+            response = self.llm_client.call_llm(
+                model_info,
+                system_prompt="Du bist ein Experte für P&ID Diagramme und Fehleranalyse. Du erklärst warum Fehler auftreten und schlägst konkrete Verbesserungen vor.",
+                user_prompt=prompt,
+                image_path=image_path
+            )
+            
+            if isinstance(response, dict):
+                error_analysis = response.get('error_analysis', {})
+                improvement_suggestions = response.get('improvement_suggestions', [])
+                specific_corrections = response.get('specific_corrections', [])
+                explanation = response.get('explanation', '')
+                
+                logger.info(f"Error Explanation: {len(improvement_suggestions)} Verbesserungsvorschläge, "
+                           f"{len(specific_corrections)} konkrete Korrekturen")
+                
+                if explanation:
+                    logger.info(f"Fehlerursachen: {explanation}")
+                
+                return {
+                    'error_analysis': error_analysis,
+                    'improvement_suggestions': improvement_suggestions,
+                    'specific_corrections': specific_corrections,
+                    'explanation': explanation
+                }
+            else:
+                logger.warning(f"Error Explanation: Response war kein Dict, sondern {type(response)}")
+                return {}
+                
+        except Exception as e:
+            logger.error(f"Error in Error Explanation: {e}", exc_info=True)
+            return {}
     
     def _generate_recommendations(
         self,

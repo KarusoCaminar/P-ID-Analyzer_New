@@ -59,11 +59,12 @@ class PromptsConfig(BaseModel):
 
 class AppConfig(BaseModel):
     """Main application configuration."""
-    paths: Union[PathsConfig, Dict[str, str]] = Field(default_factory=PathsConfig)
+    # Pydantic automatically converts dicts to these model types
+    paths: PathsConfig = Field(default_factory=PathsConfig)
     models: Dict[str, ModelConfig] = Field(default_factory=dict)
     strategies: Dict[str, Dict[str, str]] = Field(default_factory=dict)
-    logic_parameters: Union[LogicParameters, Dict[str, Any]] = Field(default_factory=LogicParameters)
-    prompts: Union[PromptsConfig, Dict[str, str]] = Field(default_factory=PromptsConfig)
+    logic_parameters: LogicParameters = Field(default_factory=LogicParameters)
+    prompts: PromptsConfig = Field(default_factory=PromptsConfig)
 
 
 class ConfigService:
@@ -85,7 +86,8 @@ class ConfigService:
             with self.config_path.open("r", encoding="utf-8") as f:
                 raw_config = yaml.safe_load(f) or {}
             
-            # Convert models dict to ModelConfig objects
+            # Pydantic handles all validation and type conversion automatically
+            # Convert models dict to ModelConfig objects (Pydantic will handle the rest)
             if "models" in raw_config:
                 models_dict = {}
                 for name, model_data in raw_config["models"].items():
@@ -95,27 +97,7 @@ class ConfigService:
                         models_dict[name] = model_data
                 raw_config["models"] = models_dict
             
-            # Handle paths - convert dict to PathsConfig if needed
-            if "paths" in raw_config and isinstance(raw_config["paths"], dict):
-                try:
-                    raw_config["paths"] = PathsConfig(**raw_config["paths"])
-                except Exception:
-                    pass  # Keep as dict if conversion fails
-            
-            # Handle prompts - convert dict to PromptsConfig if needed
-            if "prompts" in raw_config and isinstance(raw_config["prompts"], dict):
-                try:
-                    raw_config["prompts"] = PromptsConfig(**raw_config["prompts"])
-                except Exception:
-                    pass  # Keep as dict if conversion fails
-            
-            # Handle logic_parameters - convert dict to LogicParameters if needed
-            if "logic_parameters" in raw_config and isinstance(raw_config["logic_parameters"], dict):
-                try:
-                    raw_config["logic_parameters"] = LogicParameters(**raw_config["logic_parameters"])
-                except Exception:
-                    pass  # Keep as dict if conversion fails
-            
+            # Pydantic automatically converts dicts to PathsConfig, LogicParameters, PromptsConfig
             self._config = AppConfig(**raw_config)
             logger.info(f"Configuration loaded from {self.config_path}")
             
@@ -134,7 +116,27 @@ class ConfigService:
     
     def get_raw_config(self) -> Dict[str, Any]:
         """Get raw config dict for backward compatibility."""
-        return self.get_config().model_dump()
+        try:
+            config = self.get_config()
+            if hasattr(config, 'model_dump'):
+                return config.model_dump()
+            elif isinstance(config, dict):
+                return config
+            else:
+                # Fallback: try to reload config
+                self._load_config()
+                config = self.get_config()
+                if hasattr(config, 'model_dump'):
+                    return config.model_dump()
+                elif isinstance(config, dict):
+                    return config
+                else:
+                    logger.warning("Could not convert config to dict, returning empty dict")
+                    return {}
+        except Exception as e:
+            logger.error(f"Error getting raw config: {e}", exc_info=True)
+            # Return empty dict as fallback
+            return {}
     
     def update_config(self, updates: Dict[str, Any]) -> None:
         """Update configuration (does not persist to file)."""
@@ -150,8 +152,8 @@ class ConfigService:
         """Get path by key from config."""
         if self._config is None:
             return None
-        paths = self._config.paths
-        path_str = paths.get(path_key) if isinstance(paths, dict) else getattr(paths, path_key, None)
+        # No isinstance check needed - Pydantic ensures paths is always PathsConfig
+        path_str = getattr(self._config.paths, path_key, None)
         return Path(path_str) if path_str else None
     
     def get_logic_parameters(self) -> Dict[str, Any]:
@@ -171,6 +173,6 @@ class ConfigService:
         """Get prompt by key."""
         if self._config is None:
             return None
-        prompts = self._config.prompts
-        return prompts.get(prompt_key) if isinstance(prompts, dict) else getattr(prompts, prompt_key, None)
+        # No isinstance check needed - Pydantic ensures prompts is always PromptsConfig
+        return getattr(self._config.prompts, prompt_key, None)
 

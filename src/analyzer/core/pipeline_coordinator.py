@@ -169,9 +169,28 @@ class PipelineCoordinator(IProcessor):
         Returns:
             AnalysisResult with detected elements and connections
         """
+        # Get output directory first (needed for initialization)
+        final_output_dir = output_dir or self._get_output_directory(image_path)
+        
+        # TEST HARNESS: Save configuration snapshot and test metadata if test_name provided
+        if params_override and 'test_name' in params_override:
+            from src.utils.test_harness import save_config_snapshot, save_test_metadata
+            save_config_snapshot(self.config_service, final_output_dir)
+            test_name = params_override.get('test_name', 'unknown_test')
+            test_description = params_override.get('test_description', 'No description provided')
+            save_test_metadata(
+                final_output_dir,
+                test_name,
+                test_description,
+                self.model_strategy,
+                self.active_logic_parameters
+            )
+        
+        # Store output_dir for test harness
+        self.current_output_dir = final_output_dir
+        
         # Initialize run
         self._initialize_run(image_path, params_override)
-        final_output_dir = output_dir or self._get_output_directory(image_path)
         
         # Load truth data if available
         truth_data = self._load_truth_data(image_path)
@@ -187,15 +206,42 @@ class PipelineCoordinator(IProcessor):
                 self.active_logic_parameters.update(adaptation.get('strategy_adjustments', {}))
         
         try:
+            # CRITICAL FIX 1: Phase 0 MUST run BEFORE strategy selection
+            # Phase 0: Complexity Analysis (CV-based fast analysis)
+            self._update_progress(2, "Phase 0: Complexity Analysis...")
+            self._run_phase_0_complexity_analysis(image_path)
+            
             # Phase 1: Pre-analysis
             self._update_progress(5, "Phase 1: Pre-analysis...")
             self._run_phase_1_pre_analysis(image_path)
             
-            # Phase 2: Parallel core analysis
-            self._update_progress(15, "Phase 2: Parallel core analysis...")
-            swarm_result, monolith_result = self._run_phase_2_parallel_analysis(
-                image_path, final_output_dir
-            )
+            # Phase 2: Core analysis - Different order for simple vs complex P&IDs
+            # For simple P&IDs: Monolith first (recognizes elements + connections), then Swarm as hint list
+            # For complex P&IDs: Swarm → Guard Rails → Monolith (current sequential approach)
+            # CRITICAL: Now phase0_result is available (from Phase 0 above)
+            phase0_result = self._analysis_results.get('phase0_result', {})
+            strategy = phase0_result.get('strategy', 'optimal_swarm_monolith')
+
+            use_swarm = self.active_logic_parameters.get('use_swarm_analysis', True)
+            use_monolith = self.active_logic_parameters.get('use_monolith_analysis', True)
+
+            if not use_swarm and not use_monolith:
+                logger.error("Both swarm and monolith analysis are disabled. Cannot proceed.")
+                return self._create_error_result("Both analyzers are disabled.")
+
+            # CRITICAL: For simple P&IDs, use parallel analysis (Monolith + Swarm)
+            if strategy == 'simple_pid_strategy':
+                self._update_progress(15, "Phase 2: Simple P&ID analysis (Monolith + Swarm)...")
+                logger.info("CRITICAL: Simple P&ID mode - Using parallel analysis (Monolith + Swarm)")
+                swarm_result, monolith_result = self._run_phase_2_parallel_analysis(
+                    image_path, final_output_dir
+                )
+            else:
+                # Complex P&IDs: Parallel analysis (Swarm + Monolith)
+                self._update_progress(15, "Phase 2: Parallel core analysis (Swarm + Monolith)...")
+                swarm_result, monolith_result = self._run_phase_2_parallel_analysis(
+                    image_path, final_output_dir
+                )
             
             # Validate and correct coordinates (if validator exists)
             try:
@@ -237,6 +283,15 @@ class PipelineCoordinator(IProcessor):
             self._update_progress(45, "Phase 2c: Fusion...")
             fused_result = self._run_phase_2c_fusion(swarm_result, monolith_result)
             self._analysis_results = fused_result
+            
+            # CRITICAL: Check for missing legend symbols and add them if found by Monolith
+            # If legend is present, ensure all legend symbols are detected
+            legend_data = self._analysis_results.get('legend_data', {})
+            symbol_map = legend_data.get('symbol_map', {})
+            if symbol_map:
+                logger.info(f"Checking for missing legend symbols: {len(symbol_map)} symbols in legend")
+                fused_result = self._add_missing_legend_symbols(fused_result, symbol_map, monolith_result)
+                self._analysis_results = fused_result
             
             # Phase 2d: Predictive completion
             self._update_progress(50, "Phase 2d: Predictive completion...")
@@ -451,6 +506,61 @@ class PipelineCoordinator(IProcessor):
     
     # ==================== Phase Methods (Stubs - to be implemented) ====================
     
+    def _run_phase_0_complexity_analysis(self, image_path: str) -> None:
+        """
+        Phase 0: Complexity Analysis (CV-based fast analysis).
+        
+        Determines the optimal strategy based on complexity:
+        - 'simple' -> 'simple_pid_strategy' (Monolith first)
+        - 'moderate'/'complex'/'very_complex' -> 'optimal_swarm_monolith' (Swarm → Monolith)
+        
+        CRITICAL: This MUST run BEFORE strategy selection in process().
+        """
+        logger.info("--- Running Phase 0: Complexity Analysis (CV-based) ---")
+        
+        try:
+            from src.utils.complexity_analyzer import ComplexityAnalyzer
+            
+            # Use CV-based advanced analysis (fast, no LLM needed)
+            complexity_analyzer = ComplexityAnalyzer(llm_client=None)  # CV-only for speed
+            complexity_result = complexity_analyzer.analyze_complexity_cv_advanced(image_path)
+            
+            # Determine strategy based on complexity
+            complexity = complexity_result.get('complexity', 'moderate')
+            if complexity == 'simple':
+                strategy = 'simple_pid_strategy'
+            else:
+                strategy = 'optimal_swarm_monolith'
+            
+            # Store result for use in process() method
+            phase0_result = {
+                'complexity': complexity,
+                'strategy': strategy,
+                'score': complexity_result.get('score', 0.5),
+                'metrics': complexity_result.get('metrics', {}),
+                'cv_used': True,
+                'llm_used': False
+            }
+            
+            self._analysis_results['phase0_result'] = phase0_result
+            
+            logger.info(f"Phase 0 complete: complexity={complexity}, strategy={strategy}")
+            logger.info(f"Complexity metrics: {complexity_result.get('metrics', {})}")
+            
+        except Exception as e:
+            logger.error(f"Error in Phase 0 complexity analysis: {e}", exc_info=True)
+            # Fallback to default strategy
+            self._analysis_results['phase0_result'] = {
+                'complexity': 'moderate',
+                'strategy': 'optimal_swarm_monolith',
+                'score': 0.5,
+                'metrics': {},
+                'cv_used': False,
+                'llm_used': False,
+                'error': str(e)
+            }
+            logger.warning("Phase 0 failed - using default strategy: optimal_swarm_monolith")
+    
     def _run_phase_1_pre_analysis(self, image_path: str) -> None:
         """
         Phase 1: Pre-analysis (metadata, legend extraction).
@@ -565,11 +675,34 @@ class PipelineCoordinator(IProcessor):
         if line_map:
             self._global_knowledge_repo['line_map'] = line_map
         
+        # CRITICAL: Legend Critic - Plausibility Check (Step 1.2)
+        legend_confidence = 0.0
+        is_plausible = False
+        if validated_symbol_map or line_map:
+            logger.info("Running Legend Critic (Plausibility Check)...")
+            critic_result = self._run_legend_critic(validated_symbol_map, line_map)
+            is_plausible = critic_result.get('is_plausible', False)
+            legend_confidence = critic_result.get('confidence', 0.0)
+            reason = critic_result.get('reason', 'No reason provided')
+            
+            logger.info(f"Legend Critic Result: is_plausible={is_plausible}, confidence={legend_confidence:.2f}")
+            logger.info(f"Reason: {reason}")
+            
+            # Decision (Step 1.3)
+            if is_plausible and legend_confidence > 0.8:
+                logger.info("Legend is TRUSTED TRUTH (High Authority) - will be used with high priority")
+            elif is_plausible:
+                logger.info("Legend is PARTIAL TRUTH (Medium Authority) - will be used with medium priority")
+            else:
+                logger.warning("Legend is LOW CONFIDENCE (Low Authority) - will be used with low priority")
+        
         # Store complete legend data for use in analysis and output
         complete_legend_data = {
             'symbol_map': validated_symbol_map,
             'line_map': line_map,
-            'legend_bbox': parsed_legend_bbox
+            'legend_bbox': parsed_legend_bbox,
+            'legend_confidence': legend_confidence,
+            'is_plausible': is_plausible
         }
         self.state.legend_data = complete_legend_data
         self._analysis_results['legend_data'] = complete_legend_data
@@ -584,6 +717,142 @@ class PipelineCoordinator(IProcessor):
             logger.info(f"Extracted {len(line_map)} line semantic rules from legend (colors, styles).")
         
         logger.info("Phase 1 completed. Legend knowledge ready for analysis.")
+    
+    def _run_legend_critic(
+        self,
+        symbol_map: Dict[str, str],
+        line_map: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        Legend Critic: Plausibility check for extracted legend.
+        
+        Checks:
+        - Number of symbols ≈ number of symbol names?
+        - Number of lines ≈ number of line names?
+        - Is the legend complete and logically consistent?
+        
+        Args:
+            symbol_map: Extracted symbol map
+            line_map: Extracted line map
+            
+        Returns:
+            Dictionary with 'is_plausible', 'confidence', and 'reason'
+        """
+        try:
+            # Use Flash model for fast critic check
+            critic_model = self.model_strategy.get('swarm_model') or self.model_strategy.get('detail_model')
+            if not critic_model:
+                logger.warning("No critic model available, using default confidence")
+                return {
+                    'is_plausible': True,
+                    'confidence': 0.7,
+                    'reason': 'No critic model available - using default'
+                }
+            
+            # Normalize model info (handle dict, Pydantic model, or string)
+            if isinstance(critic_model, dict):
+                model_info = critic_model
+            elif hasattr(critic_model, 'model_dump'):
+                model_info = critic_model.model_dump()
+            elif hasattr(critic_model, 'dict'):
+                model_info = critic_model.dict()
+            elif isinstance(critic_model, str):
+                # If it's a string (model name), get from config
+                config = self.config_service.get_config()
+                models_config = config.models if hasattr(config, 'models') else config.get('models', {})
+                model_info = models_config.get(critic_model, {})
+            else:
+                model_info = None
+            
+            if not model_info:
+                logger.warning("Could not normalize critic model, using default confidence")
+                return {
+                    'is_plausible': True,
+                    'confidence': 0.7,
+                    'reason': 'Could not normalize critic model - using default'
+                }
+            
+            # Build critic prompt
+            import json
+            symbol_map_json = json.dumps(symbol_map, indent=2)
+            line_map_json = json.dumps(line_map, indent=2)
+            
+            critic_prompt = f"""**ROLE:** You are a P&ID Legend Critic. Your task is to evaluate the plausibility of an extracted legend.
+
+**EXTRACTED LEGEND DATA:**
+```json
+{{
+  "symbol_map": {symbol_map_json},
+  "line_map": {line_map_json}
+}}
+```
+
+**PLAUSIBILITY RULES:**
+1. **Symbol Count Check:** Number of symbols in symbol_map should approximately match the number of unique symbol names/keys.
+2. **Line Count Check:** Number of lines in line_map should approximately match the number of unique line names/keys.
+3. **Completeness Check:** The legend should be logically consistent (no obvious missing entries).
+4. **Consistency Check:** Symbol types should be standard P&ID types (e.g., "Valve", "Pump", "Volume Flow Sensor").
+
+**YOUR TASK:**
+Evaluate the plausibility of this legend extraction. Consider:
+- Are the symbol counts reasonable?
+- Are the line counts reasonable?
+- Is the legend complete and consistent?
+- Are the symbol types standard?
+
+**OUTPUT FORMAT:**
+Return ONLY a valid JSON object:
+```json
+{{
+  "is_plausible": true/false,
+  "confidence": 0.0-1.0,
+  "reason": "Brief explanation of your evaluation"
+}}
+```
+
+**CRITICAL:** 
+- If is_plausible=true and confidence > 0.8: Legend is TRUSTED TRUTH (High Authority)
+- If is_plausible=true and confidence 0.5-0.8: Legend is PARTIAL TRUTH (Medium Authority)
+- If is_plausible=false: Legend is LOW CONFIDENCE (Low Authority)
+
+Be honest and strict in your evaluation."""
+            
+            system_prompt = "You are an expert P&ID legend critic. Evaluate legend plausibility strictly and honestly."
+            
+            # Call LLM for critic evaluation
+            critic_response = self.llm_client.call_llm(
+                model_info,
+                system_prompt,
+                critic_prompt,
+                None,  # No image needed for critic
+                expected_json_keys=["is_plausible", "confidence", "reason"]
+            )
+            
+            if critic_response and isinstance(critic_response, dict):
+                is_plausible = critic_response.get('is_plausible', False)
+                confidence = float(critic_response.get('confidence', 0.0))
+                reason = critic_response.get('reason', 'No reason provided')
+                
+                return {
+                    'is_plausible': is_plausible,
+                    'confidence': confidence,
+                    'reason': reason
+                }
+            else:
+                logger.warning("Legend Critic returned invalid response, using default")
+                return {
+                    'is_plausible': True,
+                    'confidence': 0.7,
+                    'reason': 'Critic returned invalid response - using default'
+                }
+        
+        except Exception as e:
+            logger.error(f"Error in Legend Critic: {e}", exc_info=True)
+            return {
+                'is_plausible': True,
+                'confidence': 0.7,
+                'reason': f'Error in critic: {str(e)} - using default'
+            }
     
     def _parse_bbox(self, bbox_raw: Any) -> Optional[Dict[str, float]]:
         """Parse a bounding box from various formats."""
@@ -634,18 +903,21 @@ class PipelineCoordinator(IProcessor):
                 continue
             
             if symbol_type_name:
-                # Try to find element type in knowledge manager
+                # CRITICAL FIX 3: STRICT VALIDATION - only accept resolved types
+                # Try to resolve type name (finds also aliases/synonyms)
                 element_type_data = self.knowledge_manager.find_element_type_by_name(symbol_type_name)
                 
-                if not element_type_data:
-                    logger.warning(f"Type '{symbol_type_name}' not found in knowledge base. Treating as unknown type.")
-                
                 if element_type_data:
+                    # SUCCESS: Type was resolved - use official name
                     validated_map[key] = element_type_data['name']
                 else:
-                    # Use the original symbol type name as fallback
-                    logger.warning(f"Type '{symbol_type_name}' from legend could not be mapped. Using original name.")
-                    validated_map[key] = symbol_type_name
+                    # ERROR: Type is unknown and could not be resolved
+                    logger.warning(
+                        f"Type '{symbol_type_name}' from legend (Key: '{key}') "
+                        f"could NOT be resolved against the knowledge base ('element_type_list.json'). "
+                        f"This legend entry will be IGNORED."
+                    )
+                    # Do NOT add key to validated_map - strict validation
         
         return validated_map
     
@@ -738,13 +1010,35 @@ class PipelineCoordinator(IProcessor):
         
         Intelligently combines swarm (component-focused) and monolith (structure-focused)
         results to produce the best possible analysis.
+        
+        CRITICAL: Uses confidence-based fusion logic with legend authority.
         """
         from src.analyzer.analysis import FusionEngine
+        
+        # Get legend data for confidence-based fusion
+        legend_data = self._analysis_results.get('legend_data', {})
+        symbol_map = legend_data.get('symbol_map', {})
+        line_map = legend_data.get('line_map', {})
+        legend_confidence = legend_data.get('legend_confidence', 0.0)
+        is_plausible = legend_data.get('is_plausible', False)
         
         iou_threshold = self.active_logic_parameters.get('iou_match_threshold', 0.1)
         fusion_engine = FusionEngine(iou_match_threshold=iou_threshold)
         
-        fused_result = fusion_engine.fuse(swarm_result, monolith_result)
+        # CRITICAL: Pass legend data for confidence-based fusion
+        fused_result = fusion_engine.fuse_with_legend_authority(
+            swarm_result, 
+            monolith_result,
+            symbol_map=symbol_map,
+            legend_confidence=legend_confidence,
+            is_plausible=is_plausible,
+            line_map=line_map
+        )
+        
+        # TEST HARNESS: Save intermediate result after fusion
+        if hasattr(self, 'current_output_dir'):
+            from src.utils.test_harness import save_intermediate_result
+            save_intermediate_result("phase_2c_fusion", fused_result, self.current_output_dir)
         
         # Run metacritic review (cross-validation between monolith and swarm)
         if monolith_result and self.active_logic_parameters.get('use_metacritic', True):
@@ -769,6 +1063,75 @@ class PipelineCoordinator(IProcessor):
             
             except Exception as e:
                 logger.warning(f"Metacritic review failed: {e} - continuing without metacritic")
+        
+        return fused_result
+    
+    def _add_missing_legend_symbols(
+        self,
+        fused_result: Dict[str, Any],
+        symbol_map: Dict[str, str],
+        monolith_result: Optional[Dict[str, Any]]
+    ) -> Dict[str, Any]:
+        """
+        Add missing legend symbols that were found by Monolith but not by Swarm.
+        
+        This ensures that if Swarm missed a symbol from the legend, Monolith can still find it
+        and it will be added to the final result.
+        
+        Args:
+            fused_result: Current fused result
+            symbol_map: Legend symbol map (symbol_key -> type)
+            monolith_result: Monolith analysis result (may contain additional elements)
+            
+        Returns:
+            Updated fused result with missing legend symbols added
+        """
+        if not symbol_map:
+            return fused_result
+        
+        if not monolith_result:
+            return fused_result
+        
+        # Get current elements
+        current_elements = fused_result.get('elements', [])
+        current_element_ids = {el.get('id') for el in current_elements if el.get('id')}
+        current_element_types = {el.get('type') for el in current_elements if el.get('type')}
+        
+        # Get legend types
+        legend_types = set(symbol_map.values())
+        
+        # Check if all legend types are detected
+        missing_types = legend_types - current_element_types
+        
+        if not missing_types:
+            logger.info("All legend symbol types are already detected.")
+            return fused_result
+        
+        logger.info(f"Missing legend symbol types: {missing_types}")
+        
+        # Check if Monolith found any of these missing types
+        monolith_elements = monolith_result.get('elements', [])
+        added_count = 0
+        
+        for monolith_el in monolith_elements:
+            el_type = monolith_el.get('type', '')
+            el_id = monolith_el.get('id', '')
+            
+            # Check if this element type is in legend but missing from fused result
+            if el_type in missing_types:
+                # Check if element ID is not already in fused result
+                if el_id not in current_element_ids:
+                    # Add element from Monolith
+                    current_elements.append(monolith_el)
+                    current_element_ids.add(el_id)
+                    added_count += 1
+                    logger.info(f"Added missing legend symbol: {el_id} (type: {el_type}) from Monolith")
+        
+        if added_count > 0:
+            logger.info(f"Added {added_count} missing legend symbols from Monolith to fused result")
+            fused_result['elements'] = current_elements
+        else:
+            logger.warning(f"Monolith did not find any of the missing legend symbol types: {missing_types}")
         
         return fused_result
     
@@ -805,6 +1168,15 @@ class PipelineCoordinator(IProcessor):
         added_count = len(all_connections_after_prediction) - len(original_connections)
         if added_count > 0:
             logger.info(f"{added_count} connection gaps predictively closed.")
+        
+        # TEST HARNESS: Save intermediate result after predictive completion
+        if hasattr(self, 'current_output_dir'):
+            from src.utils.test_harness import save_intermediate_result
+            predictive_result = {
+                "elements": self._analysis_results.get("elements", []),
+                "connections": all_connections_after_prediction
+            }
+            save_intermediate_result("phase_2d_predictive", predictive_result, self.current_output_dir)
     
     def _run_phase_2e_polyline_refinement(self) -> None:
         """
@@ -956,6 +1328,15 @@ class PipelineCoordinator(IProcessor):
         self._analysis_results["connections"] = updated_connections
         
         logger.info(f"Polyline extraction complete: {len(polyline_results)} polylines extracted.")
+        
+        # TEST HARNESS: Save intermediate result after polyline refinement
+        if hasattr(self, 'current_output_dir'):
+            from src.utils.test_harness import save_intermediate_result
+            polyline_result = {
+                "elements": self._analysis_results.get("elements", []),
+                "connections": updated_connections
+            }
+            save_intermediate_result("phase_2e_polyline", polyline_result, self.current_output_dir)
     
     def _run_phase_3_self_correction(
         self,
@@ -1000,6 +1381,18 @@ class PipelineCoordinator(IProcessor):
                     "quality_score": current_score,
                     "final_ai_data": copy.deepcopy(self._analysis_results)
                 }
+            
+            # TEST HARNESS: Save intermediate result after each iteration
+            if hasattr(self, 'current_output_dir'):
+                from src.utils.test_harness import save_intermediate_result
+                iteration_result = {
+                    "iteration": i + 1,
+                    "quality_score": current_score,
+                    "elements": self._analysis_results.get("elements", []),
+                    "connections": self._analysis_results.get("connections", []),
+                    "errors": current_errors
+                }
+                save_intermediate_result(f"phase_3_selfcorrect_ITER_{i+1}", iteration_result, self.current_output_dir)
             
             # Early termination conditions
             if current_score >= target_score:
@@ -1369,69 +1762,33 @@ class PipelineCoordinator(IProcessor):
                     continue
             elif isinstance(el, dict):
                 try:
-                    # Validate and REPAIR bbox before conversion (don't skip, repair instead)
-                    if 'bbox' in el and isinstance(el['bbox'], dict):
-                        bbox = el['bbox']
-                        element_id = el.get('id', 'unknown')
-                        original_width = bbox.get('width', 0)
-                        original_height = bbox.get('height', 0)
-                        was_repaired = False
-                        
-                        # REPAIR invalid bbox instead of skipping
-                        if bbox.get('width', 0) <= 0 or bbox.get('height', 0) <= 0:
-                            logger.warning(
-                                f"REPAIRING element {element_id}: Invalid bbox (width={original_width}, height={original_height}) - "
-                                "repairing with minimal values"
-                            )
-                            # Repair with minimal valid values (0.001 = 0.1% of image)
-                            if bbox.get('width', 0) <= 0:
-                                bbox['width'] = 0.001
-                                was_repaired = True
-                            if bbox.get('height', 0) <= 0:
-                                bbox['height'] = 0.001
-                                was_repaired = True
-                        
-                        # Validate and normalize bbox coordinates
-                        from src.utils.type_utils import is_valid_bbox
-                        if not is_valid_bbox(bbox):
-                            # Try to repair invalid bbox
-                            logger.warning(f"REPAIRING element {element_id}: Bbox validation failed - attempting repair")
-                            # Ensure all required fields exist
-                            bbox.setdefault('x', 0.0)
-                            bbox.setdefault('y', 0.0)
-                            bbox.setdefault('width', 0.001)
-                            bbox.setdefault('height', 0.001)
-                            was_repaired = True
-                        
-                        # Ensure bbox is within bounds and repair if needed
-                        original_x = bbox.get('x', 0.0)
-                        original_y = bbox.get('y', 0.0)
-                        bbox['x'] = max(0.0, min(1.0, bbox.get('x', 0.0)))
-                        bbox['y'] = max(0.0, min(1.0, bbox.get('y', 0.0)))
-                        # Ensure width/height don't exceed bounds
-                        max_width = 1.0 - bbox['x']
-                        max_height = 1.0 - bbox['y']
-                        bbox['width'] = max(0.001, min(max_width, bbox.get('width', 0.001)))
-                        bbox['height'] = max(0.001, min(max_height, bbox.get('height', 0.001)))
-                        
-                        # Adjust confidence if bbox was repaired
-                        if was_repaired:
-                            original_confidence = el.get('confidence', 0.5)
-                            # Reduce confidence for repaired bboxes
-                            el['confidence'] = original_confidence * 0.7
-                            logger.info(
-                                f"Element {element_id} bbox repaired: "
-                                f"({original_x:.4f}, {original_y:.4f}, {original_width:.4f}, {original_height:.4f}) -> "
-                                f"({bbox['x']:.4f}, {bbox['y']:.4f}, {bbox['width']:.4f}, {bbox['height']:.4f}), "
-                                f"confidence adjusted: {original_confidence:.2f} -> {el['confidence']:.2f}"
-                            )
-                        
-                        # Create BBox model
-                        from src.analyzer.models.elements import BBox
-                        el['bbox'] = BBox(**bbox)
-                    elif 'bbox' not in el:
-                        logger.warning(f"Skipping element {el.get('id', 'unknown')}: Missing bbox (cannot repair without bbox data)")
+                    # CRITICAL FIX 2: VALIDATE instead of REPAIR - reject invalid bboxes
+                    if 'bbox' not in el or not isinstance(el['bbox'], dict):
+                        logger.warning(f"Skipping element {el.get('id', 'unknown')}: Missing or invalid bbox structure")
                         continue
+                    
+                    bbox = el['bbox']
+                    element_id = el.get('id', 'unknown')
+                    
+                    # STRICT VALIDATION: BBox must have valid, positive dimensions
+                    from src.utils.type_utils import is_valid_bbox
+                    if not is_valid_bbox(bbox) or bbox.get('width', 0) <= 0 or bbox.get('height', 0) <= 0:
+                        logger.warning(
+                            f"REJECTING element {element_id}: Invalid bbox dimensions "
+                            f"(width={bbox.get('width')}, height={bbox.get('height')}). "
+                            f"Element is likely a hallucination."
+                        )
+                        continue  # Element is rejected, not repaired
+                    
+                    # BBox must be within bounds (0.0 - 1.0)
+                    bbox['x'] = max(0.0, min(1.0, bbox.get('x', 0.0)))
+                    bbox['y'] = max(0.0, min(1.0, bbox.get('y', 0.0)))
+                    bbox['width'] = max(0.001, min(1.0 - bbox['x'], bbox.get('width', 0.001)))
+                    bbox['height'] = max(0.001, min(1.0 - bbox['y'], bbox.get('height', 0.001)))
+                    
+                    # Create BBox Pydantic model
+                    from src.analyzer.models.elements import BBox
+                    el['bbox'] = BBox(**bbox)
                     
                     # Ensure label is not None (required by Pydantic)
                     if 'label' not in el or el.get('label') is None:

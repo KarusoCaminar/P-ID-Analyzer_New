@@ -29,6 +29,7 @@ from src.utils.debug_capture import (
 )
 
 logger = logging.getLogger(__name__)
+llm_logger = logging.getLogger('llm_calls')  # Dedicated logger for LLM calls
 
 
 class LLMClient:
@@ -96,7 +97,10 @@ class LLMClient:
         
         # Load circuit breaker state if exists
         circuit_state_path = self.debug_dir / 'circuit-state.json'
-        circuit_breaker.load_state(circuit_state_path)
+        # CRITICAL FIX: Don't load state from file - always start with clean state
+        # The state will be loaded per-request if needed, but we want fresh start
+        # circuit_breaker.load_state(circuit_state_path)  # DISABLED: Always start fresh
+        logger.info("Circuit breaker initialized with clean state (file loading disabled for fresh start)")
     
     def _load_models(self) -> None:
         """Load all configured models."""
@@ -234,8 +238,58 @@ class LLMClient:
         model = self.gemini_clients[model_id]
         generation_config = model_info.get('generation_config', {})
         
+        # OPTIMIZATION: Ensure response_mime_type is set for structured output
+        if 'response_mime_type' not in generation_config:
+            # Default to JSON for structured output if not specified
+            generation_config['response_mime_type'] = "application/json"
+        
+        # OPTIMIZATION: Build response_schema if response_mime_type is JSON
+        # (Note: response_schema is optional and can be added later if needed)
+        # For now, we rely on prompts to enforce structure
+        
         # Generate request ID for tracking
         request_id = generate_request_id()
+        
+        # ENHANCED LOGGING: Log request details
+        llm_logger.info(
+            f"REQUEST [model={model_id}] [prompt_length={len(user_prompt)}] "
+            f"[system_prompt_length={len(system_prompt)}] [has_image={image_path is not None}]",
+            extra={'request_id': request_id}
+        )
+        
+        # Log prompt preview (first 500 chars) - Handle Unicode encoding errors
+        prompt_preview = user_prompt[:500] + "..." if len(user_prompt) > 500 else user_prompt
+        # Replace Unicode arrows with ASCII equivalent to avoid encoding errors
+        prompt_preview_safe = prompt_preview.replace('→', '->').replace('←', '<-').replace('↔', '<->')
+        try:
+            llm_logger.debug(
+                f"PROMPT_PREVIEW: {prompt_preview_safe}",
+                extra={'request_id': request_id}
+            )
+        except UnicodeEncodeError:
+            # Fallback: encode to ASCII with errors='replace'
+            prompt_preview_ascii = prompt_preview_safe.encode('ascii', errors='replace').decode('ascii')
+            llm_logger.debug(
+                f"PROMPT_PREVIEW: {prompt_preview_ascii}",
+                extra={'request_id': request_id}
+            )
+        
+        # Log full prompt to separate file for debugging
+        llm_log_save_prompts = self.config.get('logic_parameters', {}).get('llm_log_save_prompts', True)
+        if llm_log_save_prompts and self.debug_dir:
+            prompt_log_file = self.debug_dir / f"prompt-{request_id}.txt"
+            try:
+                with open(prompt_log_file, 'w', encoding='utf-8') as f:
+                    f.write(f"=== REQUEST ID: {request_id} ===\n")
+                    f.write(f"=== TIMESTAMP: {datetime.now().isoformat()} ===\n\n")
+                    f.write(f"=== MODEL: {model_id} ===\n\n")
+                    f.write(f"=== SYSTEM PROMPT ===\n{system_prompt}\n\n")
+                    f.write(f"=== USER PROMPT ===\n{user_prompt}\n")
+                    if image_path:
+                        f.write(f"\n=== IMAGE PATH ===\n{image_path}\n")
+                llm_logger.debug(f"Full prompt saved to: {prompt_log_file}", extra={'request_id': request_id})
+            except Exception as e:
+                llm_logger.warning(f"Failed to save prompt file: {e}", extra={'request_id': request_id})
         
         # Prepare content
         parts = [user_prompt]
@@ -335,6 +389,93 @@ class LLMClient:
                 # Parse response
                 parsed_response = self._parse_response(response, expected_json_keys)
                 
+                # ENHANCED LOGGING: Log response details
+                if response:
+                    # Extract response text
+                    response_text = None
+                    if hasattr(response, 'text'):
+                        response_text = response.text
+                    elif isinstance(response, dict):
+                        response_text = json.dumps(response, indent=2, ensure_ascii=False)
+                    elif isinstance(response, str):
+                        response_text = response
+                    else:
+                        response_text = str(response)
+                    
+                    # Log response summary
+                    response_length = len(response_text) if response_text else 0
+                    llm_logger.info(
+                        f"RESPONSE [length={response_length}] [type={type(response).__name__}]",
+                        extra={'request_id': request_id}
+                    )
+                    
+                    # Log full response (preview in log, full in file)
+                    llm_log_save_responses = self.config.get('logic_parameters', {}).get('llm_log_save_responses', True)
+                    llm_log_max_length = self.config.get('logic_parameters', {}).get('llm_log_max_response_length', 10000)
+                    
+                    if response_text:
+                        # Log preview
+                        response_preview = response_text[:llm_log_max_length] + "..." if len(response_text) > llm_log_max_length else response_text
+                        llm_logger.debug(
+                            f"RESPONSE_PREVIEW: {response_preview}",
+                            extra={'request_id': request_id}
+                        )
+                        
+                        # Save full response to separate file
+                        if llm_log_save_responses and self.debug_dir:
+                            response_log_file = self.debug_dir / f"response-{request_id}.txt"
+                            try:
+                                with open(response_log_file, 'w', encoding='utf-8') as f:
+                                    f.write(f"=== REQUEST ID: {request_id} ===\n")
+                                    f.write(f"=== TIMESTAMP: {datetime.now().isoformat()} ===\n\n")
+                                    f.write(f"=== RAW RESPONSE ===\n{response_text}\n")
+                                    if hasattr(response, '__dict__'):
+                                        f.write(f"\n=== RESPONSE ATTRIBUTES ===\n")
+                                        try:
+                                            f.write(json.dumps(vars(response), indent=2, default=str))
+                                        except Exception:
+                                            f.write(str(vars(response)))
+                                llm_logger.debug(f"Full response saved to: {response_log_file}", extra={'request_id': request_id})
+                            except Exception as e:
+                                llm_logger.warning(f"Failed to save response file: {e}", extra={'request_id': request_id})
+                    
+                    # Log parsed response structure
+                    if isinstance(parsed_response, dict):
+                        keys = list(parsed_response.keys())
+                        llm_logger.info(
+                            f"RESPONSE_STRUCTURE [keys={keys}] [element_count={len(parsed_response.get('elements', []))}] "
+                            f"[connection_count={len(parsed_response.get('connections', []))}]",
+                            extra={'request_id': request_id}
+                        )
+                    elif isinstance(response, dict):
+                        keys = list(response.keys())
+                        llm_logger.info(
+                            f"RESPONSE_STRUCTURE [keys={keys}] [element_count={len(response.get('elements', []))}] "
+                            f"[connection_count={len(response.get('connections', []))}]",
+                            extra={'request_id': request_id}
+                        )
+                    elif hasattr(response, 'text'):
+                        # Try to parse as JSON
+                        try:
+                            parsed = json.loads(response.text)
+                            if isinstance(parsed, dict):
+                                keys = list(parsed.keys())
+                                llm_logger.info(
+                                    f"RESPONSE_STRUCTURE [keys={keys}] [element_count={len(parsed.get('elements', []))}] "
+                                    f"[connection_count={len(parsed.get('connections', []))}]",
+                                    extra={'request_id': request_id}
+                                )
+                        except json.JSONDecodeError:
+                            llm_logger.warning(
+                                f"RESPONSE_NOT_JSON: Could not parse response as JSON",
+                                extra={'request_id': request_id}
+                            )
+                else:
+                    llm_logger.error(
+                        f"RESPONSE_EMPTY: No response received",
+                        extra={'request_id': request_id}
+                    )
+                
                 # Update response summary
                 tokens = None
                 if hasattr(response, 'usage_metadata') and response.usage_metadata:
@@ -417,6 +558,10 @@ class LLMClient:
             except Exception as e:
                 last_error = e
                 logger.error(f"LLM call error (attempt {attempt + 1}/{max_retries}): {e}")
+                llm_logger.error(
+                    f"ERROR [type={type(e).__name__}] [message={str(e)}] [attempt={attempt + 1}/{max_retries}]",
+                    extra={'request_id': request_id}, exc_info=True
+                )
                 
                 # Capture error response
                 try:

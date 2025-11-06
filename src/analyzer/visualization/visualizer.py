@@ -57,8 +57,9 @@ class Visualizer:
             import numpy as np
             from scipy import ndimage
             
-            img = Image.open(image_path)
-            img = img.convert('RGB')
+            # Load image and copy to avoid context manager issues
+            with Image.open(image_path) as img_temp:
+                img = img_temp.convert('RGB').copy()
             
             # Create base overlay
             overlay = Image.new('RGBA', img.size, (0, 0, 0, 0))
@@ -81,34 +82,38 @@ class Visualizer:
                 h = max(1, min(self.image_height - y, h))
                 
                 # Fill uncertainty map
-                uncertainty_map[y:y+h, x:x+w] = max(uncertainty_map[y:y+h, x:x+w].max(), uncertainty)
+                uncertainty_map[y:y+h, x:x+w] = np.maximum(uncertainty_map[y:y+h, x:x+w], uncertainty)
             
             # Apply Gaussian blur for smooth gradients
             if uncertainty_map.max() > 0:
                 uncertainty_map = ndimage.gaussian_filter(uncertainty_map, sigma=5)
             
-            # Convert to heatmap colors
+            # Convert to heatmap colors using vectorized operations (PERFORMANCE OPTIMIZATION)
             heatmap_img = np.zeros((self.image_height, self.image_width, 4), dtype=np.uint8)
             
-            # Red to yellow to green gradient
-            for y in range(self.image_height):
-                for x in range(self.image_width):
-                    uncertainty = uncertainty_map[y, x]
-                    
-                    if uncertainty > 0:
-                        # High uncertainty = red, low uncertainty = green
-                        if uncertainty > 0.7:
-                            # Red for high uncertainty
-                            r, g, b = 255, int(255 * (1 - uncertainty)), 0
-                        elif uncertainty > 0.4:
-                            # Yellow for medium uncertainty
-                            r, g, b = 255, 255, int(255 * (1 - uncertainty * 2))
-                        else:
-                            # Green for low uncertainty
-                            r, g, b = int(255 * uncertainty), 255, 0
-                        
-                        alpha = int(180 * uncertainty)
-                        heatmap_img[y, x] = [r, g, b, alpha]
+            # Vectorized color mapping (much faster than nested loops)
+            uncertainty_flat = uncertainty_map.flatten()
+            mask = uncertainty_flat > 0
+            
+            if mask.any():
+                # High uncertainty (red)
+                high_mask = (uncertainty_flat > 0.7) & mask
+                heatmap_img[:, :, 0].flat[high_mask] = 255
+                heatmap_img[:, :, 1].flat[high_mask] = (255 * (1 - uncertainty_flat[high_mask])).astype(np.uint8)
+                heatmap_img[:, :, 3].flat[high_mask] = (180 * uncertainty_flat[high_mask]).astype(np.uint8)
+                
+                # Medium uncertainty (yellow)
+                medium_mask = (uncertainty_flat > 0.4) & (uncertainty_flat <= 0.7) & mask
+                heatmap_img[:, :, 0].flat[medium_mask] = 255
+                heatmap_img[:, :, 1].flat[medium_mask] = 255
+                heatmap_img[:, :, 2].flat[medium_mask] = (255 * (1 - uncertainty_flat[medium_mask] * 2)).astype(np.uint8)
+                heatmap_img[:, :, 3].flat[medium_mask] = (180 * uncertainty_flat[medium_mask]).astype(np.uint8)
+                
+                # Low uncertainty (green)
+                low_mask = (uncertainty_flat <= 0.4) & mask
+                heatmap_img[:, :, 0].flat[low_mask] = (255 * uncertainty_flat[low_mask]).astype(np.uint8)
+                heatmap_img[:, :, 1].flat[low_mask] = 255
+                heatmap_img[:, :, 3].flat[low_mask] = (180 * uncertainty_flat[low_mask]).astype(np.uint8)
             
             # Create overlay from heatmap
             heatmap_overlay = Image.fromarray(heatmap_img, 'RGBA')
@@ -133,13 +138,14 @@ class Visualizer:
                 try:
                     text = f"{uncertainty:.2f}"
                     draw.text((x + 5, y + 5), text, fill=(255, 255, 255, 255))
-                except:
+                except (OSError, IOError, AttributeError) as e:
+                    logger.debug(f"Error drawing uncertainty text: {e}")
                     pass
             
-            # Blend overlay with original image
-            result_img = img.convert('RGBA')
+            # Blend overlay with original image (optimize: convert only once)
+            result_img = img.convert('RGBA')  # Only convert once
             result = Image.alpha_composite(result_img, heatmap_overlay)
-            result = result.convert('RGB')
+            result = result.convert('RGB')  # Final conversion
             result.save(output_path, quality=95, dpi=(150, 150))
             
             logger.info(f"Uncertainty heatmap saved to: {output_path}")
@@ -148,8 +154,8 @@ class Visualizer:
             logger.error(f"Error drawing uncertainty heatmap: {e}", exc_info=True)
             # Fallback to simple version
             try:
-                img = Image.open(image_path)
-                img = img.convert('RGBA')
+                with Image.open(image_path) as img_temp:
+                    img = img_temp.convert('RGBA').copy()
                 overlay = Image.new('RGBA', img.size, (0, 0, 0, 0))
                 draw = ImageDraw.Draw(overlay)
                 
@@ -168,7 +174,8 @@ class Visualizer:
                 result = result.convert('RGB')
                 result.save(output_path)
                 return True
-            except:
+            except (OSError, IOError, ValueError, AttributeError) as e:
+                logger.warning(f"Error saving debug map: {e}")
                 return False
     
     def draw_debug_map(
@@ -191,8 +198,8 @@ class Visualizer:
             True if successful
         """
         try:
-            img = Image.open(image_path)
-            img = img.convert('RGB')
+            with Image.open(image_path) as img_temp:
+                img = img_temp.convert('RGB').copy()
             
             # Create overlay for cleaner visualization
             overlay = Image.new('RGBA', img.size, (0, 0, 0, 0))
@@ -280,15 +287,18 @@ class Visualizer:
                             
                             # Draw text
                             base_draw.text((x, y - text_height - 2), label, fill=(255, 255, 255))
-                        except:
+                        except (OSError, IOError, AttributeError) as e:
+                            logger.debug(f"Error drawing full label, trying truncated: {e}")
                             try:
                                 base_draw.text((x, y - 15), label[:15], fill=(0, 255, 0))
-                            except:
+                            except (OSError, IOError, AttributeError) as e2:
+                                logger.debug(f"Error drawing truncated label: {e2}")
                                 pass
             
-            # Composite overlay
-            result = Image.alpha_composite(img.convert('RGBA'), overlay)
-            result = result.convert('RGB')
+            # Composite overlay (optimize: convert only once)
+            result_img_rgba = img.convert('RGBA')  # Only convert once
+            result = Image.alpha_composite(result_img_rgba, overlay)
+            result = result.convert('RGB')  # Final conversion
             result.save(output_path, quality=95, dpi=(150, 150))
             
             logger.info(f"Debug map saved to: {output_path}")
@@ -312,8 +322,9 @@ class Visualizer:
         Returns:
             True if successful
         """
+        fig = None
         try:
-            plt.figure(figsize=(10, 6))
+            fig = plt.figure(figsize=(10, 6))
             plt.plot(score_history, marker='o', linewidth=2, markersize=8)
             plt.xlabel('Iteration', fontsize=12)
             plt.ylabel('Quality Score', fontsize=12)
@@ -322,13 +333,15 @@ class Visualizer:
             plt.ylim([0, 100])
             plt.tight_layout()
             plt.savefig(output_path, dpi=150, bbox_inches='tight')
-            plt.close()
             
             logger.info(f"Score curve saved to: {output_path}")
             return True
         except Exception as e:
             logger.error(f"Error plotting score curve: {e}", exc_info=True)
             return False
+        finally:
+            if fig:
+                plt.close(fig)
     
     def plot_kpi_dashboard(
         self,
@@ -345,6 +358,7 @@ class Visualizer:
         Returns:
             True if successful
         """
+        fig = None
         try:
             fig, axes = plt.subplots(2, 2, figsize=(14, 10))
             fig.suptitle('KPI Dashboard', fontsize=16, fontweight='bold')
@@ -391,13 +405,15 @@ class Visualizer:
             
             plt.tight_layout()
             plt.savefig(output_path, dpi=150, bbox_inches='tight')
-            plt.close()
             
             logger.info(f"KPI dashboard saved to: {output_path}")
             return True
         except Exception as e:
             logger.error(f"Error plotting KPI dashboard: {e}", exc_info=True)
             return False
+        finally:
+            if fig:
+                plt.close(fig)
     
     def draw_confidence_map(
         self,
@@ -417,8 +433,8 @@ class Visualizer:
             True if successful
         """
         try:
-            img = Image.open(image_path)
-            img = img.convert('RGBA')
+            with Image.open(image_path) as img_temp:
+                img = img_temp.convert('RGBA').copy()
             
             # Create confidence overlay
             overlay = Image.new('RGBA', img.size, (0, 0, 0, 0))
@@ -448,13 +464,14 @@ class Visualizer:
                     try:
                         text = f"{confidence:.2f}"
                         draw.text((x + 5, y + 5), text, fill=(255, 255, 255, 255))
-                    except:
+                    except (OSError, IOError, AttributeError) as e:
+                        logger.debug(f"Error drawing confidence text: {e}")
                         pass
             
-            # Blend overlay with original image
-            result = Image.alpha_composite(img, overlay)
-            result = result.convert('RGB')
-            result.save(output_path)
+            # Blend overlay with original image (optimize: convert only once)
+            result = Image.alpha_composite(img, overlay)  # img is already RGBA
+            result = result.convert('RGB')  # Final conversion
+            result.save(output_path, quality=95, dpi=(150, 150))  # Consistent quality settings
             
             logger.info(f"Confidence map saved to: {output_path}")
             return True

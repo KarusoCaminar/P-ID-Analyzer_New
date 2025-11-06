@@ -11,10 +11,23 @@ Optimized algorithms for graph operations including:
 import logging
 from typing import List, Dict, Any, Set, Tuple, Optional
 from dataclasses import dataclass
+import numpy as np
 
 from src.utils.type_utils import is_valid_bbox
 
 logger = logging.getLogger(__name__)
+
+# Try to import thefuzz for fuzzy string matching (Levenshtein distance)
+try:
+    from thefuzz import fuzz
+    FUZZ_AVAILABLE = True
+except ImportError:
+    try:
+        from fuzzywuzzy import fuzz
+        FUZZ_AVAILABLE = True
+    except ImportError:
+        FUZZ_AVAILABLE = False
+        logger.warning("thefuzz/fuzzywuzzy not available. Install with: pip install thefuzz. Duplicate fusion will use basic string matching only.")
 
 
 def calculate_iou(bbox1: Dict[str, float], bbox2: Dict[str, float]) -> float:
@@ -100,6 +113,68 @@ def dedupe_connections(conns: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return kept
 
 
+def propagate_connection_confidence(
+    connections: List[Dict[str, Any]],
+    elements: List[Dict[str, Any]],
+    method: str = "min"
+) -> List[Dict[str, Any]]:
+    """
+    Propagate confidence from elements to connections.
+    
+    Connection confidence is calculated based on the confidence of the
+    elements it connects. This ensures consistency between element and connection confidences.
+    
+    Args:
+        connections: List of connection dictionaries with 'from_id' and 'to_id'
+        elements: List of element dictionaries with 'id' and 'confidence'
+        method: Method to calculate connection confidence from element confidences
+               - "min": Use minimum of from/to element confidences (conservative)
+               - "weighted_avg": Use weighted average (balanced)
+    
+    Returns:
+        Updated connections with propagated confidence scores
+    """
+    # Build element map for fast lookup
+    element_map = {el.get('id'): el for el in elements if el.get('id')}
+    
+    updated_connections = []
+    for conn in connections:
+        updated_conn = conn.copy()
+        
+        from_id = conn.get('from_id')
+        to_id = conn.get('to_id')
+        
+        from_el = element_map.get(from_id)
+        to_el = element_map.get(to_id)
+        
+        if not from_el or not to_el:
+            # If elements not found, keep original confidence or set default
+            if 'confidence' not in updated_conn:
+                updated_conn['confidence'] = 0.3
+            updated_connections.append(updated_conn)
+            continue
+        
+        # Get element confidences
+        from_conf = from_el.get('confidence', 0.5)
+        to_conf = to_el.get('confidence', 0.5)
+        
+        # Calculate connection confidence based on method
+        if method == "min":
+            conn_confidence = min(from_conf, to_conf)
+        elif method == "weighted_avg":
+            # Weighted average (favor higher confidence)
+            conn_confidence = (from_conf * 0.5) + (to_conf * 0.5)
+        else:
+            # Default: use minimum
+            conn_confidence = min(from_conf, to_conf)
+        
+        # Update connection confidence
+        updated_conn['confidence'] = max(0.0, min(1.0, conn_confidence))
+        updated_connections.append(updated_conn)
+    
+    return updated_connections
+
+
 @dataclass
 class SynthesizerConfig:
     """Configuration for GraphSynthesizer."""
@@ -149,6 +224,9 @@ class GraphSynthesizer:
         # Collect all elements and connections
         all_elements: List[Dict[str, Any]] = []
         all_connections: List[Dict[str, Any]] = []
+        
+        # CV-based BBox refinement enabled?
+        use_cv_refinement = getattr(self.config, 'use_cv_bbox_refinement', True)
         
         for tile_result in self.raw_results:
             if hasattr(tile_result, 'data'):
@@ -253,50 +331,212 @@ class GraphSynthesizer:
         }
     
     def _deduplicate_elements(self, elements: List[Dict[str, Any]]) -> None:
-        """Deduplicate elements by IoU matching."""
-        # Sort by area (larger first)
-        sorted_elements = sorted(
-            elements,
-            key=lambda e: e.get('bbox', {}).get('width', 0) * e.get('bbox', {}).get('height', 0),
-            reverse=True
-        )
+        """
+        Deduplicate elements by ID + Label + IoU with smart deduplication.
         
-        for elem in sorted_elements:
-            if 'bbox' not in elem or not is_valid_bbox(elem['bbox']):
-                continue
+        Uses:
+        1. ID-based deduplication (same ID = duplicate)
+        2. Label-based deduplication (similar labels + IoU)
+        3. IoU-based deduplication (spatial clustering + class-aware matching)
+        """
+        # FIX 1: ID-based deduplication (same ID = duplicate)
+        elements_by_id = {}
+        for elem in elements:
+            elem_id = elem.get('id', '')
+            if elem_id:
+                if elem_id not in elements_by_id:
+                    elements_by_id[elem_id] = []
+                elements_by_id[elem_id].append(elem)
+        
+        # For each ID set: keep best version (highest confidence + smallest BBox)
+        id_deduplicated = []
+        for elem_id, elem_list in elements_by_id.items():
+            if len(elem_list) > 1:
+                # Choose best version: highest confidence * (1 / area)
+                best_elem = max(elem_list, key=lambda e: (
+                    e.get('confidence', 0.5) * 
+                    (1.0 / max(e.get('bbox', {}).get('width', 1) * e.get('bbox', {}).get('height', 1), 0.001))
+                ))
+                id_deduplicated.append(best_elem)
+                logger.debug(f"ID deduplication: {elem_id} - kept best version out of {len(elem_list)} duplicates")
+            else:
+                id_deduplicated.extend(elem_list)
+        
+        # FIX 2: Label-based deduplication with Levenshtein distance (similar labels + IoU)
+        # Normalize labels for matching
+        def normalize_label(label: str) -> str:
+            if not label:
+                return ""
+            return label.strip().replace(' ', '-').replace('_', '-').lower()
+        
+        elements_by_normalized_label = {}
+        for elem in id_deduplicated:
+            label = elem.get('label', '')
+            normalized_label = normalize_label(label)
+            if normalized_label:
+                if normalized_label not in elements_by_normalized_label:
+                    elements_by_normalized_label[normalized_label] = []
+                elements_by_normalized_label[normalized_label].append(elem)
+        
+        # Deduplicate similar labels with IoU check
+        label_deduplicated = []
+        for normalized_label, label_elements in elements_by_normalized_label.items():
+            if len(label_elements) > 1:
+                # Check IoU between elements with same label
+                unique_elements = []
+                for elem in label_elements:
+                    is_duplicate = False
+                    for unique_elem in unique_elements:
+                        if is_valid_bbox(elem.get('bbox', {})) and is_valid_bbox(unique_elem.get('bbox', {})):
+                            iou = calculate_iou(elem['bbox'], unique_elem['bbox'])
+                            if iou >= 0.3:  # Same label + high IoU = duplicate
+                                # Keep better version
+                                elem_precision = elem.get('confidence', 0.5) / max(elem['bbox'].get('width', 1) * elem['bbox'].get('height', 1), 0.001)
+                                unique_precision = unique_elem.get('confidence', 0.5) / max(unique_elem['bbox'].get('width', 1) * unique_elem['bbox'].get('height', 1), 0.001)
+                                if elem_precision > unique_precision:
+                                    unique_elements.remove(unique_elem)
+                                    unique_elements.append(elem)
+                                is_duplicate = True
+                                break
+                    if not is_duplicate:
+                        unique_elements.append(elem)
+                label_deduplicated.extend(unique_elements)
+                if len(label_elements) != len(unique_elements):
+                    logger.debug(f"Label deduplication: {normalized_label} - {len(label_elements)} → {len(unique_elements)}")
+            else:
+                label_deduplicated.extend(label_elements)
+        
+        # FIX 2.5: Aggressive duplicate fusion with Levenshtein distance (for similar but not identical labels)
+        # This catches cases like "ISA" vs "(Instrument Air Supply)" or "ISA-Supply" vs "Instrument Air Supply"
+        if FUZZ_AVAILABLE:
+            fuzz_deduplicated = []
+            used_indices = set()
             
-            # Check for matches with existing elements using optimized search
-            matched = False
-            elem_center_x = elem['bbox']['x'] + elem['bbox']['width'] / 2
-            elem_center_y = elem['bbox']['y'] + elem['bbox']['height'] / 2
-            
-            for existing_id, existing_elem in self.final_elements.items():
-                if 'bbox' not in existing_elem or not is_valid_bbox(existing_elem['bbox']):
+            for i, elem_a in enumerate(label_deduplicated):
+                if i in used_indices:
                     continue
                 
-                # Quick distance check before IoU calculation (optimization)
-                existing_center_x = existing_elem['bbox']['x'] + existing_elem['bbox']['width'] / 2
-                existing_center_y = existing_elem['bbox']['y'] + existing_elem['bbox']['height'] / 2
+                label_a = elem_a.get('label', '')
+                bbox_a = elem_a.get('bbox', {})
                 
-                distance = ((elem_center_x - existing_center_x) ** 2 + (elem_center_y - existing_center_y) ** 2) ** 0.5
-                max_bbox_size = max(
-                    elem['bbox']['width'] + elem['bbox']['height'],
-                    existing_elem['bbox']['width'] + existing_elem['bbox']['height']
-                )
-                
-                # Skip if too far apart (optimization)
-                if distance > max_bbox_size * 2:
+                if not label_a or not is_valid_bbox(bbox_a):
+                    fuzz_deduplicated.append(elem_a)
                     continue
                 
-                iou = calculate_iou(elem['bbox'], existing_elem['bbox'])
-                if iou >= self.config.iou_match_threshold:
-                    # Merge: keep the one with more complete data
-                    matched = True
-                    break
+                # Check against all remaining elements
+                merged_group = [elem_a]
+                for j, elem_b in enumerate(label_deduplicated[i+1:], start=i+1):
+                    if j in used_indices:
+                        continue
+                    
+                    label_b = elem_b.get('label', '')
+                    bbox_b = elem_b.get('bbox', {})
+                    
+                    if not label_b or not is_valid_bbox(bbox_b):
+                        continue
+                    
+                    # Calculate fuzzy string similarity (token set ratio handles word order differences)
+                    similarity = fuzz.token_set_ratio(label_a, label_b)
+                    
+                    # Calculate IoU
+                    iou = calculate_iou(bbox_a, bbox_b)
+                    
+                    # If similarity > 80% AND IoU > 0.05, treat as duplicate
+                    if similarity > 80 and iou > 0.05:
+                        merged_group.append(elem_b)
+                        used_indices.add(j)
+                        logger.debug(f"Fuzzy duplicate fusion: '{label_a}' <-> '{label_b}' (similarity={similarity}%, IoU={iou:.3f})")
+                
+                # Keep element with highest confidence from merged group
+                if len(merged_group) > 1:
+                    best_elem = max(merged_group, key=lambda e: e.get('confidence', 0.5))
+                    fuzz_deduplicated.append(best_elem)
+                    logger.info(f"Fuzzy duplicate fusion: Merged {len(merged_group)} elements (kept: '{best_elem.get('label', '')}')")
+                else:
+                    fuzz_deduplicated.append(elem_a)
             
-            if not matched:
-                elem_id = elem.get('id', f"elem_{len(self.final_elements)}")
-                self.final_elements[elem_id] = elem
+            label_deduplicated = fuzz_deduplicated
+        
+        # FIX 3: IoU-based deduplication (spatial clustering + class-aware matching) - as before
+        # Smart Deduplication: Group by class first (class-aware matching)
+        elements_by_class = {}
+        for elem in label_deduplicated:
+            elem_type = elem.get('type', 'Unknown')
+            if elem_type not in elements_by_class:
+                elements_by_class[elem_type] = []
+            elements_by_class[elem_type].append(elem)
+        
+        # Deduplicate within each class first (more efficient)
+        for elem_type, class_elements in elements_by_class.items():
+            # Sort by precision (confidence * IoU / area) - higher precision first
+            sorted_elements = sorted(
+                class_elements,
+                key=lambda e: (
+                    e.get('confidence', 0.5) * 
+                    (e.get('bbox', {}).get('width', 0) * e.get('bbox', {}).get('height', 0))
+                ),
+                reverse=True
+            )
+            
+            for elem in sorted_elements:
+                if 'bbox' not in elem or not is_valid_bbox(elem['bbox']):
+                    continue
+                
+                # Check for matches with existing elements using optimized search
+                matched = False
+                elem_center_x = elem['bbox']['x'] + elem['bbox']['width'] / 2
+                elem_center_y = elem['bbox']['y'] + elem['bbox']['height'] / 2
+                
+                for existing_id, existing_elem in self.final_elements.items():
+                    if 'bbox' not in existing_elem or not is_valid_bbox(existing_elem['bbox']):
+                        continue
+                    
+                    # Quick distance check before IoU calculation (optimization)
+                    existing_center_x = existing_elem['bbox']['x'] + existing_elem['bbox']['width'] / 2
+                    existing_center_y = existing_elem['bbox']['y'] + existing_elem['bbox']['height'] / 2
+                    
+                    distance = ((elem_center_x - existing_center_x) ** 2 + (elem_center_y - existing_center_y) ** 2) ** 0.5
+                    max_bbox_size = max(
+                        elem['bbox']['width'] + elem['bbox']['height'],
+                        existing_elem['bbox']['width'] + existing_elem['bbox']['height']
+                    )
+                    
+                    # Skip if too far apart (optimization)
+                    if distance > max_bbox_size * 2:
+                        continue
+                    
+                    iou = calculate_iou(elem['bbox'], existing_elem['bbox'])
+                    if iou >= self.config.iou_match_threshold:
+                        # Calculate precision scores for both elements
+                        # Precision = (Confidence * IoU) / BBox_Area
+                        # Higher precision = better (smaller area, higher confidence)
+                        
+                        elem_bbox_area = elem['bbox'].get('width', 0) * elem['bbox'].get('height', 0)
+                        existing_bbox_area = existing_elem['bbox'].get('width', 0) * existing_elem['bbox'].get('height', 0)
+                        
+                        elem_confidence = elem.get('confidence', 0.5)
+                        existing_confidence = existing_elem.get('confidence', 0.5)
+                        
+                        # Calculate precision scores
+                        elem_precision = (elem_confidence * iou) / max(elem_bbox_area, 0.001)  # Avoid division by zero
+                        existing_precision = (existing_confidence * iou) / max(existing_bbox_area, 0.001)
+                        
+                        # Prefer element with higher precision (smaller area, higher confidence)
+                        if elem_precision > existing_precision:
+                            # Replace existing with more precise element
+                            self.final_elements[existing_id] = elem
+                            logger.debug(f"Replaced element {existing_id} with more precise version "
+                                       f"(precision: {elem_precision:.4f} > {existing_precision:.4f})")
+                        else:
+                            # Keep existing element (it's more precise)
+                            logger.debug(f"Kept existing element {existing_id} (precision: {existing_precision:.4f} >= {elem_precision:.4f})")
+                        
+                        matched = True
+                        break
+                
+                if not matched:
+                    elem_id = elem.get('id', f"elem_{len(self.final_elements)}")
+                    self.final_elements[elem_id] = elem
 
 
 def match_polylines_to_connections(
@@ -349,6 +589,8 @@ def match_polylines_to_connections(
         min_dist = float('inf')
 
         for poly in polylines:
+            if not poly or len(poly) == 0:
+                continue  # Skip empty polylines
             poly_start = poly[0]
             poly_end = poly[-1]
             

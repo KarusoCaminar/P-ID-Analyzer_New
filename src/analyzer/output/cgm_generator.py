@@ -42,10 +42,77 @@ class CGMGenerator:
         """
         self.elements = elements
         self.connections = connections
-        self.id_to_element = {el.get('id'): el for el in elements if el.get('id')}
+        
+        # FIX: ID-Normalisierung und Fuzzy Matching
+        # 1. Normalisiere alle IDs (z.B. "FT 10" → "FT-10", "Fv-3-3040" → "Fv-3-3040")
+        # 2. Erstelle Mapping: original_id → normalized_id
+        self.id_normalization_map = {}
+        normalized_elements = []
+        
+        for el in elements:
+            if el.get('id'):
+                original_id = el.get('id')
+                normalized_id = self._normalize_id(original_id)
+                self.id_normalization_map[original_id] = normalized_id
+                # Update element ID
+                el_copy = el.copy() if isinstance(el, dict) else {k: getattr(el, k) for k in dir(el) if not k.startswith('_')}
+                el_copy['id'] = normalized_id
+                normalized_elements.append(el_copy)
+            else:
+                normalized_elements.append(el)
+        
+        # Update elements with normalized IDs
+        self.elements = normalized_elements
+        
+        # Create id_to_element map with normalized IDs
+        self.id_to_element = {el.get('id'): el for el in self.elements if el.get('id')}
+        
+        # Also create label_to_element map for fuzzy matching
+        self.label_to_element = {}
+        for el in self.elements:
+            label = el.get('label', '')
+            if label:
+                normalized_label = self._normalize_id(label)
+                if normalized_label not in self.label_to_element:
+                    self.label_to_element[normalized_label] = []
+                self.label_to_element[normalized_label].append(el)
+        
+        # FIX: Normalisiere Connection-IDs und entferne None-Verbindungen
+        normalized_connections = []
+        for conn in connections:
+            from_id = conn.get('from_id')
+            to_id = conn.get('to_id')
+            
+            # Skip connections with None or missing IDs
+            if not from_id or not to_id or from_id == 'None' or to_id == 'None':
+                logger.debug(f"Skipping connection with None/missing IDs: {from_id} → {to_id}")
+                continue
+            
+            # Normalize connection IDs
+            from_id_normalized = self._normalize_id(from_id)
+            to_id_normalized = self._normalize_id(to_id)
+            
+            # Check if elements exist (after normalization)
+            from_el_exists = from_id_normalized in self.id_to_element or self._find_element_by_label(from_id)
+            to_el_exists = to_id_normalized in self.id_to_element or self._find_element_by_label(to_id)
+            
+            if not from_el_exists or not to_el_exists:
+                logger.debug(f"Skipping connection with non-existent elements: {from_id} → {to_id}")
+                continue
+            
+            # Update connection with normalized IDs
+            conn_copy = conn.copy()
+            conn_copy['from_id'] = from_id_normalized
+            conn_copy['to_id'] = to_id_normalized
+            normalized_connections.append(conn_copy)
+        
+        logger.info(f"Connection normalization: {len(connections)} → {len(normalized_connections)} (removed {len(connections) - len(normalized_connections)} invalid connections)")
+        
+        # Update connections with normalized IDs
+        self.connections = normalized_connections
         
         # Use graph theory analyzer
-        self.graph_analyzer = GraphTheoryAnalyzer(elements, connections)
+        self.graph_analyzer = GraphTheoryAnalyzer(self.elements, self.connections)
         
     def generate_cgm_python_code(self) -> str:
         """
@@ -108,11 +175,15 @@ class Network:
         """Generate Network instance with all connectors."""
         connector_lines = []
         
-        # Process all connections
+        # FIX: Process all connections and filter out None connectors
+        valid_connections = []
         for i, conn in enumerate(self.connections):
             connector_code = self._generate_connector_code(conn, i)
-            if connector_code:
+            if connector_code:  # Only add if connector_code is not None
                 connector_lines.append(connector_code)
+                valid_connections.append(conn)
+        
+        logger.info(f"CGM generation: {len(self.connections)} connections → {len(valid_connections)} valid connectors")
         
         # Handle split/merge points
         split_merge_connectors = self._detect_split_merge_connectors()
@@ -127,19 +198,93 @@ cgm_network = Network(
     )
 )"""
     
+    def _normalize_id(self, id_str: str) -> str:
+        """
+        Normalize ID for matching (remove spaces, normalize separators).
+        
+        Examples:
+        - "FT 10" → "FT-10"
+        - "Fv-3-3040" → "Fv-3-3040"
+        - "Mixer M-08" → "Mixer-M-08"
+        """
+        if not id_str:
+            return ""
+        
+        # Normalize: replace spaces with hyphens, remove extra spaces
+        normalized = id_str.strip().replace(' ', '-').replace('_', '-')
+        
+        # Remove multiple consecutive hyphens
+        while '--' in normalized:
+            normalized = normalized.replace('--', '-')
+        
+        # Remove leading/trailing hyphens
+        normalized = normalized.strip('-')
+        
+        return normalized
+    
+    def _find_element_by_label(self, search_label: str) -> Optional[Dict[str, Any]]:
+        """
+        Find element by label using fuzzy matching.
+        
+        Args:
+            search_label: Label to search for (will be normalized)
+            
+        Returns:
+            Element dict or None if not found
+        """
+        normalized_search = self._normalize_id(search_label)
+        
+        # Try exact match first
+        if normalized_search in self.label_to_element:
+            candidates = self.label_to_element[normalized_search]
+            if candidates:
+                return candidates[0]  # Return first match
+        
+        # Try partial match (label contains search or vice versa)
+        for normalized_label, candidates in self.label_to_element.items():
+            if normalized_search in normalized_label or normalized_label in normalized_search:
+                if candidates:
+                    return candidates[0]
+        
+        return None
+    
     def _generate_connector_code(self, conn: Dict[str, Any], index: int) -> Optional[str]:
-        """Generate connector code for a single connection."""
+        """Generate connector code for a single connection with ID-Normalisierung und Fuzzy Matching."""
         from_id = conn.get('from_id')
         to_id = conn.get('to_id')
         
         if not from_id or not to_id:
+            logger.warning(f"Connection {index} has missing from_id or to_id: {from_id} → {to_id}")
             return None
         
-        from_el = self.id_to_element.get(from_id)
-        to_el = self.id_to_element.get(to_id)
+        # Normalize IDs
+        from_id_normalized = self._normalize_id(from_id)
+        to_id_normalized = self._normalize_id(to_id)
+        
+        # Try to find elements by normalized ID
+        from_el = self.id_to_element.get(from_id_normalized)
+        if not from_el:
+            # Try with original ID (in case it wasn't normalized)
+            from_el = self.id_to_element.get(from_id)
+            if not from_el:
+                # Try fuzzy matching by label
+                from_el = self._find_element_by_label(from_id)
+                if from_el:
+                    logger.debug(f"Found element by label fuzzy match: {from_id} → {from_el.get('id')}")
+        
+        to_el = self.id_to_element.get(to_id_normalized)
+        if not to_el:
+            # Try with original ID (in case it wasn't normalized)
+            to_el = self.id_to_element.get(to_id)
+            if not to_el:
+                # Try fuzzy matching by label
+                to_el = self._find_element_by_label(to_id)
+                if to_el:
+                    logger.debug(f"Found element by label fuzzy match: {to_id} → {to_el.get('id')}")
         
         if not from_el or not to_el:
-            return None
+            logger.warning(f"Could not find elements for connection {index}: {from_id} → {to_id}")
+            return None  # FIX: Nicht "None" verwenden, sondern None zurückgeben (wird dann übersprungen)
         
         # Get port names with intelligent fallback
         from_port_name = self._get_port_name(conn, 'from_port_id', from_el, default='Out')

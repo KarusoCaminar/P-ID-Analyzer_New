@@ -1,0 +1,84 @@
+{
+  "symbol_map": {
+    "Valve": "Valve",
+    "Control Valve": "Valve",
+    "Check Valve": "Valve",
+    "Ball Valve": "Valve",
+    "Gate Valve": "Gate Valve",
+    "Globe Valve": "Globe Valve",
+    "Pump": "Pump",
+    "Centrifugal Pump": "Pump",
+    "Positive Displacement Pump": "Pump",
+    "Flow Sensor": "Volume Flow Sensor",
+    "Flow Meter": "Volume Flow Sensor",
+    "Flow Transmitter": "Volume Flow Sensor",
+    "FT": "Volume Flow Sensor",
+    "Pressure Sensor": "Pressure Sensor",
+    "Pressure Gauge": "Pressure Sensor",
+    "PT": "Pressure Sensor",
+    "Temperature Sensor": "Temperature Sensor",
+    "Temperature Gauge": "Temperature Sensor",
+    "TT": "Temperature Sensor",
+    "Tank": "Tank",
+    "Storage Tank": "Tank",
+    "Mixer": "Mixer",
+    "Agitator": "Mixer",
+    "Heat Exchanger": "Heat Exchanger",
+    "HX": "Heat Exchanger",
+    "Source": "Source",
+    "Inlet": "Source",
+    "Sink": "Sink",
+    "Outlet": "Sink",
+    "Sample Point": "Sample Point",
+    "Sampling Point": "Sample Point",
+    "S": "Sample Point",
+    "Boiler": "Boiler",
+    "Reactor": "Reactor",
+    "R": "Reactor",
+    "Filter": "Filter",
+    "Separator": "Separator",
+    "Compressor": "Compressor",
+    "Fan": "Fan",
+    "Blower": "Fan"
+  },
+  "line_map": {
+    "Process Line": {
+      "color": "black",
+      "style": "solid"
+    },
+    "Process Pipe": {
+      "color": "black",
+      "style": "solid"
+    },
+    "Instrument Line": {
+      "color": "blue",
+      "style": "dashed"
+    },
+    "Electrical Line": {
+      "color": "red",
+      "style": "dashed"
+    },
+    "Utility Line": {
+      "color": "green",
+      "style": "dotted"
+    },
+    "Water Line": {
+      "color": "blue",
+      "style": "solid"
+    },
+    "Steam Line": {
+      "color": "red",
+      "style": "solid"
+    },
+    "Air Line": {
+      "color": "green",
+      "style": "dashed"
+    }
+  },
+  "metadata": {
+    "source": "ISO/DIN Standard Fallback",
+    "confidence": 0.5,
+    "description": "Standard P&ID legend based on ISO/DIN standards. Used when no legend is found in diagram."
+  }
+}
+

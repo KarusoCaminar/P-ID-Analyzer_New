@@ -61,10 +61,28 @@ class Element(BaseModel):
     type: str = Field(description="Element type")
     bbox: BBox = Field(description="Element bounding box")
     ports: List[Port] = Field(default_factory=list, description="Element ports")
-    confidence: float = Field(default=0.0, ge=0.0, le=1.0, description="Detection confidence")
+    
+    # CRITICAL FIX: Confidence is not optional and has a PENALTY default
+    # If no confidence is provided by LLM, it defaults to 0.1 (PENALTY)
+    # This ensures fusion_engine.py never receives None values
+    confidence: float = Field(
+        default=0.1,  # PENALTY: If no confidence is provided, it's 0.1 (not 0.0)
+        ge=0.0,
+        le=1.0,
+        description="Confidence score (0.0-1.0). Default 0.1 if missing (PENALTY for missing confidence)"
+    )
+    
     system_group: Optional[str] = Field(None, description="System group identifier")
     tile_coords: Optional[tuple[int, int, int, int]] = Field(None, description="Tile coordinates for swarm analysis")
     metadata: Dict[str, Any] = Field(default_factory=dict, description="Additional metadata")
+    
+    @field_validator('type')
+    @classmethod
+    def validate_element_type(cls, v: str) -> str:
+        """Validate that element type is not empty."""
+        if not v:
+            raise ValueError("Element type must be a non-empty string")
+        return v
 
 
 class ConnectionKind(str, Enum):
@@ -92,5 +110,22 @@ class Connection(BaseModel):
     predicted: Optional[bool] = Field(None, description="Whether connection was predicted (gap-filled)")
     hops: int = Field(default=1, ge=1, description="Number of hops in connection path")
     raw_line_data: Optional[Dict[str, Any]] = Field(None, description="Raw line extraction data")
-    confidence: float = Field(default=0.0, ge=0.0, le=1.0, description="Connection confidence")
+    
+    # CRITICAL FIX: Confidence is not optional and has a PENALTY default
+    # If no confidence is provided by LLM, it defaults to 0.1 (PENALTY)
+    # This ensures fusion_engine.py never receives None values
+    confidence: float = Field(
+        default=0.1,  # PENALTY: If no confidence is provided, it's 0.1 (not 0.0)
+        ge=0.0,
+        le=1.0,
+        description="Confidence score (0.0-1.0). Default 0.1 if missing (PENALTY for missing confidence)"
+    )
+    
+    @field_validator('from_id', 'to_id')
+    @classmethod
+    def validate_ids(cls, v: str) -> str:
+        """Validate that element IDs are not empty."""
+        if not v:
+            raise ValueError("Element IDs must be non-empty strings")
+        return v
 

@@ -43,16 +43,54 @@ def test_type_utils():
         return False
 
 def test_graph_utils():
-    """Test graph utility functions."""
+    """Test graph utility functions with precise assertions."""
     try:
         from src.utils.graph_utils import calculate_iou, dedupe_connections
         
-        # Test IoU calculation
-        bbox1 = {'x': 0, 'y': 0, 'width': 100, 'height': 100}
-        bbox2 = {'x': 50, 'y': 50, 'width': 100, 'height': 100}
-        iou = calculate_iou(bbox1, bbox2)
-        assert 0 <= iou <= 1, "IoU should be between 0 and 1"
-        print("[OK] calculate_iou works")
+        # Test IoU calculation with precise values
+        # Test 1: Identical boxes (IoU = 1.0)
+        bbox1 = {'x': 0, 'y': 0, 'width': 10, 'height': 10}
+        bbox_identisch = {'x': 0, 'y': 0, 'width': 10, 'height': 10}
+        iou_1 = calculate_iou(bbox1, bbox_identisch)
+        assert abs(iou_1 - 1.0) < 1e-6, f"Identical bbox IoU should be 1.0, got {iou_1}"
+        print("[OK] calculate_iou: Identical boxes (IoU = 1.0)")
+        
+        # Test 2: No overlap (IoU = 0.0)
+        bbox_kein_overlap = {'x': 10, 'y': 0, 'width': 10, 'height': 10}
+        iou_0 = calculate_iou(bbox1, bbox_kein_overlap)
+        assert abs(iou_0 - 0.0) < 1e-6, f"Non-overlapping bbox IoU should be 0.0, got {iou_0}"
+        print("[OK] calculate_iou: Non-overlapping boxes (IoU = 0.0)")
+        
+        # Test 3: Partial overlap (50% overlap area / 150% union area = 0.333...)
+        # bbox1: (0,0) to (10,10), area = 100
+        # bbox_halb_overlap: (5,0) to (15,10), area = 100
+        # Intersection: (5,0) to (10,10), area = 50
+        # Union: 100 + 100 - 50 = 150
+        # IoU = 50 / 150 = 1/3 ≈ 0.333...
+        bbox_halb_overlap = {'x': 5, 'y': 0, 'width': 10, 'height': 10}
+        iou_teil = calculate_iou(bbox1, bbox_halb_overlap)
+        expected_iou = 50.0 / 150.0  # 1/3 ≈ 0.333...
+        assert abs(iou_teil - expected_iou) < 1e-6, f"Partial IoU should be {expected_iou:.6f}, got {iou_teil:.6f}"
+        print(f"[OK] calculate_iou: Partial overlap (IoU = {expected_iou:.6f})")
+        
+        # Test 4: One box inside another (IoU = inner_area / outer_area)
+        # bbox1: (0,0) to (10,10), area = 100
+        # bbox_inside: (2,2) to (8,8), area = 36
+        # Intersection = 36, Union = 100
+        # IoU = 36 / 100 = 0.36
+        bbox_inside = {'x': 2, 'y': 2, 'width': 6, 'height': 6}
+        iou_inside = calculate_iou(bbox1, bbox_inside)
+        expected_iou_inside = 36.0 / 100.0  # 0.36
+        assert abs(iou_inside - expected_iou_inside) < 1e-6, f"Contained box IoU should be {expected_iou_inside:.6f}, got {iou_inside:.6f}"
+        print(f"[OK] calculate_iou: Contained box (IoU = {expected_iou_inside:.6f})")
+        
+        # Test 5: Edge case - touching boxes (IoU = 0.0, no intersection area)
+        bbox_touching = {'x': 10, 'y': 0, 'width': 10, 'height': 10}  # Touches at x=10
+        iou_touching = calculate_iou(bbox1, bbox_touching)
+        assert abs(iou_touching - 0.0) < 1e-6, f"Touching boxes IoU should be 0.0, got {iou_touching}"
+        print("[OK] calculate_iou: Touching boxes (IoU = 0.0)")
+        
+        print("[OK] calculate_iou works with specific values")
         
         # Test connection deduplication
         connections = [

@@ -149,6 +149,189 @@ class GraphTheoryAnalyzer:
         
         return {'splits': splits, 'merges': merges}
     
+    def analyze_pipeline_flows_with_reasoning(
+        self,
+        llm_client: Any,
+        image_path: str,
+        model_info: Dict[str, Any]
+    ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+        """
+        MITTELFRISTIGE VERBESSERUNG: Multi-Step Reasoning für Topologie-Validierung.
+        
+        Uses LLM for intelligent topology validation:
+        - Step 1: Identify expected flows (Pump → Valve → Sensor → Mixer)
+        - Step 2: Compare with actual graph structure
+        - Step 3: Identify missing connections
+        - Step 4: Validate flow directions
+        
+        Args:
+            llm_client: LLM client for reasoning
+            image_path: Path to image for context
+            model_info: Model configuration
+            
+        Returns:
+            (validated_flows, reasoning_report)
+        """
+        logger.info("Multi-Step Reasoning: Validating topology with LLM...")
+        
+        import json
+        
+        # Prepare graph data for LLM
+        elements_for_llm = []
+        for el in self.elements:
+            el_dict = el if isinstance(el, dict) else el.model_dump() if hasattr(el, 'model_dump') else el.__dict__ if hasattr(el, '__dict__') else {}
+            elements_for_llm.append({
+                'id': el_dict.get('id', ''),
+                'label': el_dict.get('label', ''),
+                'type': el_dict.get('type', ''),
+                'bbox': el_dict.get('bbox', {}),
+                'confidence': el_dict.get('confidence', 0.5)
+            })
+        
+        connections_for_llm = []
+        for conn in self.connections:
+            conn_dict = conn if isinstance(conn, dict) else conn.model_dump() if hasattr(conn, 'model_dump') else conn.__dict__ if hasattr(conn, '__dict__') else {}
+            connections_for_llm.append({
+                'from_id': conn_dict.get('from_id', ''),
+                'to_id': conn_dict.get('to_id', ''),
+                'confidence': conn_dict.get('confidence', 0.5)
+            })
+        
+        # Get graph metrics
+        graph_metrics = self.calculate_graph_metrics()
+        splits_merges = self.detect_splits_and_merges()
+        
+        prompt = f"""Du bist ein Experte für P&ID Diagramme und Topologie-Validierung. Analysiere die Topologie mit Multi-Step Reasoning.
+
+**ERKANNTE ELEMENTE:**
+{json.dumps(elements_for_llm, indent=2, ensure_ascii=False)}
+
+**ERKANNTE VERBINDUNGEN:**
+{json.dumps(connections_for_llm, indent=2, ensure_ascii=False)}
+
+**GRAPH METRIKEN:**
+- Split Points: {len(splits_merges.get('splits', []))}
+- Merge Points: {len(splits_merges.get('merges', []))}
+- Graph Density: {graph_metrics.get('density', 0.0):.3f}
+- Cycles: {graph_metrics.get('num_cycles', 0)}
+
+**MULTI-STEP REASONING:**
+
+**Schritt 1: Erwartete Topologie identifizieren**
+- Pumpen (P-*) → sollten SOURCES sein (Startpunkte)
+- Valves (Fv-*, V-*) → sollten zwischen Pumpen und Sensoren sein
+- Flow Sensors (FT-*) → sollten nach Valves sein
+- Mixer (M-*) → sollten nach Flow Sensors sein
+- Reactors (R-*) → sollten nach Mixern sein
+- Sinks → sollten Endpunkte sein
+
+**Schritt 2: Tatsächliche Topologie analysieren**
+- Welche Elemente sind verbunden?
+- Welche Flow-Pfade existieren?
+- Gibt es isolierte Elemente?
+
+**Schritt 3: Fehlende Verbindungen identifizieren**
+- Wenn ich 2 Pumpen sehe, sollten beide in den Mixer führen
+- Wenn ich Pump → Valve → Sensor sehe, sollte es auch Sensor → Mixer geben
+- Wenn ich Split-Points sehe, sollten alle Outputs verbunden sein
+
+**Schritt 4: Flow-Richtungen validieren**
+- Pumpen sollten nur Outputs haben (nicht Inputs)
+- Sinks sollten nur Inputs haben (nicht Outputs)
+- Valves sollten Inputs und Outputs haben
+- Flow Sensors sollten Inputs und Outputs haben
+
+**Schritt 5: Topologie-Konsistenz prüfen**
+- Alle Elemente sollten verbunden sein (außer bekannte Standalone-Types)
+- Flow-Pfade sollten vollständig sein (keine Lücken)
+- Split/Merge Points sollten korrekt sein
+
+**RETURN FORMAT (JSON):**
+{{
+  "validated_flows": [
+    {{
+      "flow_id": "flow_1",
+      "path": ["P-201", "Fv-3-3040", "FT-10", "Mixer-M-08"],
+      "confidence": 0.9,
+      "reasoning": "Vollständiger Flow-Pfad: Pump → Valve → Flow Sensor → Mixer"
+    }}
+  ],
+  "missing_connections": [
+    {{
+      "from_id": "P-504",
+      "to_id": "Fv-3-3041",
+      "reasoning": "Pump P-504 sollte zu Valve Fv-3-3041 führen (zweiter Input-Stream)"
+    }}
+  ],
+  "invalid_connections": [
+    {{
+      "from_id": "FT-10",
+      "to_id": "P-201",
+      "reasoning": "Falsche Richtung: Flow Sensor kann nicht zu Pump führen"
+    }}
+  ],
+  "topology_validation": {{
+    "is_valid": true,
+    "issues": ["Missing connection: P-504 → Fv-3-3041"],
+    "recommendations": ["Füge P-504 → Fv-3-3041 hinzu", "Füge Fv-3-3041 → FT-11 hinzu"]
+  }},
+  "multi_step_reasoning": [
+    "Schritt 1: Erkannt: 2 Pumpen (P-201, P-504), 2 Valves (Fv-3-3040, Fv-3-3041), 2 Flow Sensors (FT-10, FT-11), 1 Mixer (M-08)",
+    "Schritt 2: Tatsächliche Topologie: P-201 → Fv-3-3040 → FT-10 → M-08 (vollständig), P-504 → ? (unvollständig)",
+    "Schritt 3: Fehlende Verbindungen: P-504 → Fv-3-3041, Fv-3-3041 → FT-11, FT-11 → M-08",
+    "Schritt 4: Flow-Richtungen: Alle korrekt (Pumpen haben nur Outputs, etc.)",
+    "Schritt 5: Topologie-Konsistenz: Ein Flow-Pfad ist unvollständig (P-504 Stream)"
+  ]
+}}
+
+**WICHTIG:**
+- Nutze Multi-Step Reasoning: Schritt für Schritt argumentieren
+- Nutze P&ID Domain Knowledge: Pumpen → Valves → Sensoren → Mixer
+- Nutze Graph Theory: Split/Merge Points, Flow-Pfade, Konsistenz
+- Nur Verbindungen vorschlagen wenn du sicher bist (>70% confidence)
+"""
+        
+        try:
+            response = llm_client.call_llm(
+                model_info,
+                system_prompt="Du bist ein Experte für P&ID Diagramme und Topologie-Validierung. Du analysierst Topologie mit Multi-Step Reasoning.",
+                user_prompt=prompt,
+                image_path=image_path
+            )
+            
+            if isinstance(response, dict):
+                validated_flows = response.get('validated_flows', [])
+                missing_connections = response.get('missing_connections', [])
+                invalid_connections = response.get('invalid_connections', [])
+                topology_validation = response.get('topology_validation', {})
+                multi_step_reasoning = response.get('multi_step_reasoning', [])
+                
+                logger.info(f"Multi-Step Reasoning: {len(validated_flows)} validierte Flows, "
+                           f"{len(missing_connections)} fehlende Verbindungen, "
+                           f"{len(invalid_connections)} ungültige Verbindungen")
+                
+                if multi_step_reasoning:
+                    logger.info("Multi-Step Reasoning Steps:")
+                    for step in multi_step_reasoning:
+                        logger.info(f"  - {step}")
+                
+                reasoning_report = {
+                    'validated_flows': validated_flows,
+                    'missing_connections': missing_connections,
+                    'invalid_connections': invalid_connections,
+                    'topology_validation': topology_validation,
+                    'multi_step_reasoning': multi_step_reasoning
+                }
+                
+                return validated_flows, reasoning_report
+            else:
+                logger.warning(f"Multi-Step Reasoning: Response war kein Dict, sondern {type(response)}")
+                return [], {}
+                
+        except Exception as e:
+            logger.error(f"Error in Multi-Step Reasoning: {e}", exc_info=True)
+            return [], {}
+    
     def analyze_pipeline_flows(self) -> List[Dict[str, Any]]:
         """
         Analyze pipeline flows (complete flow paths) using graph theory.

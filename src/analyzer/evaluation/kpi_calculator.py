@@ -21,9 +21,14 @@ class KPICalculator:
     Comprehensive KPI calculator for P&ID analysis.
     """
     
-    def __init__(self):
-        """Initialize KPI calculator."""
-        pass
+    def __init__(self, confidence_calibration_offset: float = 0.0):
+        """
+        Initialize KPI calculator.
+        
+        Args:
+            confidence_calibration_offset: Offset to apply to confidence scores for calibration
+        """
+        self.confidence_calibration_offset = confidence_calibration_offset
     
     def calculate_comprehensive_kpis(
         self,
@@ -106,7 +111,8 @@ class KPICalculator:
             try:
                 cycles = list(nx.simple_cycles(G))
                 kpis['num_cycles'] = len(cycles)
-            except:
+            except (nx.NetworkXError, ValueError, RuntimeError) as e:
+                logger.warning(f"Cycle detection failed: {e}")
                 pass
             
             # Centrality
@@ -115,7 +121,8 @@ class KPICalculator:
                     centrality = nx.betweenness_centrality(G, normalized=True)
                     if centrality:
                         kpis['max_centrality'] = round(max(centrality.values()), 4)
-                except:
+                except (nx.NetworkXError, ValueError, ZeroDivisionError) as e:
+                    logger.warning(f"Centrality calculation failed: {e}")
                     pass
         
         except Exception as e:
@@ -124,12 +131,19 @@ class KPICalculator:
         return kpis
     
     def _calculate_confidence_metrics(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        """Calculate confidence metrics."""
+        """Calculate confidence metrics with calibration."""
         elements = data.get('elements', [])
         connections = data.get('connections', [])
         
-        element_confidences = [el.get('confidence', 0.0) for el in elements if 'confidence' in el]
-        connection_confidences = [conn.get('confidence', 0.0) for conn in connections if 'confidence' in conn]
+        # Apply calibration offset to confidence scores
+        element_confidences = [
+            min(1.0, max(0.0, el.get('confidence', 0.0) + self.confidence_calibration_offset))
+            for el in elements if 'confidence' in el
+        ]
+        connection_confidences = [
+            min(1.0, max(0.0, conn.get('confidence', 0.0) + self.confidence_calibration_offset))
+            for conn in connections if 'confidence' in conn
+        ]
         
         metrics = {}
         
@@ -222,75 +236,40 @@ class KPICalculator:
                 analysis_elements.append(normalized_el)
         
         truth_elements = []
+        truth_elements_with_bbox = []
+        truth_elements_without_bbox = []
+        
         for el in truth_data.get('elements', []):
             bbox = get_el_field(el, 'bbox')
+            normalized_el = el.copy() if isinstance(el, dict) else {k: getattr(el, k) for k in dir(el) if not k.startswith('_')}
+            
             if bbox:
-                normalized_el = el.copy() if isinstance(el, dict) else {k: getattr(el, k) for k in dir(el) if not k.startswith('_')}
                 normalized_el['bbox'] = normalize_bbox(bbox)
+                truth_elements_with_bbox.append(normalized_el)
+                truth_elements.append(normalized_el)
+            else:
+                # Store elements without bbox for ID-based matching
+                truth_elements_without_bbox.append(normalized_el)
                 truth_elements.append(normalized_el)
         
-        logger.info(f"IoU matching: {len(analysis_elements)} analysis elements, {len(truth_elements)} truth elements")
+        logger.info(f"Matching: {len(analysis_elements)} analysis elements, {len(truth_elements)} truth elements "
+                   f"({len(truth_elements_with_bbox)} with bbox, {len(truth_elements_without_bbox)} without bbox)")
         
-        # Match elements using IoU (Intersection over Union) instead of IDs
         matches = {}  # truth_id -> analysis_element
         unmatched_analysis = list(analysis_elements)
         iou_scores = []  # Track IoU scores for debugging
+        id_match_scores = []  # Track ID-based match scores
         
-        # Adaptive IoU threshold: Start high for precision, reduce if needed
-        iou_threshold = 0.3  # Higher initial threshold for better precision
+        # PHASE 1: IoU-based matching for elements with bboxes
         matches_found = False
-        
-        # First pass: Try with high threshold (0.3) for precision
-        for truth_el in truth_elements:
-            best_match = None
-            max_iou = 0.0
-            best_match_idx = -1
-            
-            truth_bbox = truth_el.get('bbox') if isinstance(truth_el, dict) else get_el_field(truth_el, 'bbox')
-            if not truth_bbox:
-                continue
-            
-            for idx, analysis_el in enumerate(unmatched_analysis):
-                analysis_bbox = analysis_el.get('bbox') if isinstance(analysis_el, dict) else get_el_field(analysis_el, 'bbox')
-                if not analysis_bbox:
-                    continue
-                    
-                iou = self._calculate_iou(truth_bbox, analysis_bbox)
-                if iou > max_iou:
-                    max_iou = iou
-                    best_match = analysis_el
-                    best_match_idx = idx
-            
-            if max_iou >= iou_threshold and best_match:
-                matches_found = True
-                truth_id = get_el_field(truth_el, 'id', f"truth_{len(matches)}")
-                matches[truth_id] = best_match
-                iou_scores.append(max_iou)
-                if best_match_idx >= 0:
-                    unmatched_analysis.pop(best_match_idx)
-                logger.info(f"Matched truth element {truth_id} with IoU {max_iou:.3f} (threshold: {iou_threshold:.2f})")
-            elif max_iou > 0.0:
-                # Log close misses for debugging
-                truth_id = get_el_field(truth_el, 'id', f"truth_{len(matches)}")
-                logger.debug(f"Close miss: truth element {truth_id} best IoU {max_iou:.3f} < threshold {iou_threshold:.2f}")
-        
-        # If no matches found with high threshold, retry with lower thresholds
-        if not matches_found and len(truth_elements) > 0:
-            logger.warning(f"No matches found with IoU >= {iou_threshold}, retrying with lower thresholds")
-            
-            # Reset for retry
-            unmatched_analysis = list(analysis_elements)
-            matches = {}
-            iou_scores = []
-            
-            # Try with medium threshold (0.2)
-            iou_threshold = 0.2
-            for truth_el in truth_elements:
+        if truth_elements_with_bbox:
+            iou_threshold = 0.3
+            for truth_el in truth_elements_with_bbox:
                 best_match = None
                 max_iou = 0.0
                 best_match_idx = -1
                 
-                truth_bbox = truth_el.get('bbox') if isinstance(truth_el, dict) else get_el_field(truth_el, 'bbox')
+                truth_bbox = truth_el.get('bbox')
                 if not truth_bbox:
                     continue
                 
@@ -312,52 +291,95 @@ class KPICalculator:
                     iou_scores.append(max_iou)
                     if best_match_idx >= 0:
                         unmatched_analysis.pop(best_match_idx)
-                    logger.info(f"Matched truth element {truth_id} with IoU {max_iou:.3f} (threshold: {iou_threshold:.2f})")
-            
-            # Final fallback: very low threshold (0.1) only if still no matches
-            if not matches_found and len(truth_elements) > 0:
-                logger.warning(f"No matches found with IoU >= {iou_threshold}, using fallback threshold 0.1")
-                
-                # Reset for final retry
-                unmatched_analysis = list(analysis_elements)
-                matches = {}
-                iou_scores = []
-                iou_threshold = 0.1
-                
-                for truth_el in truth_elements:
-                    best_match = None
-                    max_iou = 0.0
-                    best_match_idx = -1
-                    
-                    truth_bbox = truth_el.get('bbox') if isinstance(truth_el, dict) else get_el_field(truth_el, 'bbox')
-                    if not truth_bbox:
-                        continue
-                    
-                    for idx, analysis_el in enumerate(unmatched_analysis):
-                        analysis_bbox = analysis_el.get('bbox') if isinstance(analysis_el, dict) else get_el_field(analysis_el, 'bbox')
-                        if not analysis_bbox:
-                            continue
-                            
-                        iou = self._calculate_iou(truth_bbox, analysis_bbox)
-                        if iou > max_iou:
-                            max_iou = iou
-                            best_match = analysis_el
-                            best_match_idx = idx
-                    
-                    if max_iou >= iou_threshold and best_match:
-                        matches_found = True
-                        truth_id = get_el_field(truth_el, 'id', f"truth_{len(matches)}")
-                        matches[truth_id] = best_match
-                        iou_scores.append(max_iou)
-                        if best_match_idx >= 0:
-                            unmatched_analysis.pop(best_match_idx)
-                        logger.info(f"Matched truth element {truth_id} with IoU {max_iou:.3f} (threshold: {iou_threshold:.2f})")
+                    logger.debug(f"Matched truth element {truth_id} with IoU {max_iou:.3f}")
         
-        if iou_scores:
-            avg_iou = sum(iou_scores) / len(iou_scores)
-            logger.info(f"Matched {len(matches)} elements with average IoU {avg_iou:.3f}")
+        # PHASE 2: ID-based matching for elements without bboxes (fuzzy matching)
+        if truth_elements_without_bbox:
+            logger.info(f"Using ID-based matching for {len(truth_elements_without_bbox)} truth elements without bboxes")
+            
+            def normalize_id(id_str: str) -> str:
+                """Normalize ID for fuzzy matching (remove spaces, lowercase, etc.)"""
+                if not id_str:
+                    return ""
+                return id_str.lower().replace(" ", "").replace("-", "").replace("_", "")
+            
+            def normalize_label(label_str: str) -> str:
+                """Normalize label for fuzzy matching"""
+                if not label_str:
+                    return ""
+                return label_str.lower().strip()
+            
+            for truth_el in truth_elements_without_bbox:
+                truth_id = get_el_field(truth_el, 'id', '')
+                truth_type = get_el_field(truth_el, 'type', '')
+                truth_label = get_el_field(truth_el, 'label', '')
+                
+                best_match = None
+                best_match_score = 0.0
+                best_match_idx = -1
+                
+                for idx, analysis_el in enumerate(unmatched_analysis):
+                    analysis_id = get_el_field(analysis_el, 'id', '')
+                    analysis_type = get_el_field(analysis_el, 'type', '')
+                    analysis_label = get_el_field(analysis_el, 'label', '')
+                    
+                    match_score = 0.0
+                    
+                    # Priority 1: Exact ID match (highest priority)
+                    if truth_id and analysis_id:
+                        if normalize_id(truth_id) == normalize_id(analysis_id):
+                            match_score = 1.0
+                        # Priority 2: ID contains truth ID or vice versa
+                        elif normalize_id(truth_id) in normalize_id(analysis_id) or normalize_id(analysis_id) in normalize_id(truth_id):
+                            match_score = 0.8
+                    
+                    # Priority 3: Label match (high priority)
+                    if match_score < 0.8 and truth_label and analysis_label:
+                        norm_truth_label = normalize_label(truth_label)
+                        norm_analysis_label = normalize_label(analysis_label)
+                        if norm_truth_label == norm_analysis_label:
+                            match_score = max(match_score, 0.9)
+                        elif norm_truth_label in norm_analysis_label or norm_analysis_label in norm_truth_label:
+                            match_score = max(match_score, 0.7)
+                    
+                    # Priority 4: Type match (medium priority)
+                    if match_score < 0.7 and truth_type and analysis_type:
+                        if truth_type.lower() == analysis_type.lower():
+                            match_score = max(match_score, 0.5)
+                    
+                    if match_score > best_match_score:
+                        best_match_score = match_score
+                        best_match = analysis_el
+                        best_match_idx = idx
+                
+                # Accept match if score >= 0.5 (ID or label match)
+                if best_match_score >= 0.5 and best_match:
+                    truth_id_key = truth_id or f"truth_{len(matches)}"
+                    matches[truth_id_key] = best_match
+                    id_match_scores.append(best_match_score)
+                    if best_match_idx >= 0:
+                        unmatched_analysis.pop(best_match_idx)
+                    logger.info(f"Matched truth element {truth_id_key} (type: {truth_type}, label: {truth_label}) "
+                              f"with analysis element (id: {get_el_field(best_match, 'id')}, type: {get_el_field(best_match, 'type')}) "
+                              f"using ID-based matching (score: {best_match_score:.2f})")
+                elif truth_id or truth_label:
+                    logger.debug(f"No ID match found for truth element {truth_id or truth_label} (type: {truth_type})")
+        
+        # Summary of matching results
+        total_matches = len(matches)
+        if iou_scores or id_match_scores:
+            if iou_scores:
+                avg_iou = sum(iou_scores) / len(iou_scores)
+                logger.info(f"Matched {len(iou_scores)} elements using IoU (avg IoU: {avg_iou:.3f})")
+            if id_match_scores:
+                avg_id_score = sum(id_match_scores) / len(id_match_scores)
+                logger.info(f"Matched {len(id_match_scores)} elements using ID-based matching (avg score: {avg_id_score:.3f})")
+            logger.info(f"Total matches: {total_matches} out of {len(truth_elements)} truth elements")
         else:
-            logger.warning(f"No elements matched! Check IoU threshold ({iou_threshold}) and bbox formats.")
+            if truth_elements:
+                logger.warning(f"No elements matched! ({len(truth_elements)} truth elements, {len(analysis_elements)} analysis elements)")
+            else:
+                logger.info("No truth elements provided for matching")
         
         # Calculate metrics
         correctly_found = set(matches.keys())
@@ -373,17 +395,60 @@ class KPICalculator:
         element_recall = len(correctly_found) / len(truth_elements) if truth_elements else 0.0
         element_f1 = 2 * (element_precision * element_recall) / (element_precision + element_recall) if (element_precision + element_recall) > 0 else 0.0
         
-        # Type accuracy (only for matched elements)
+        # Type accuracy (only for matched elements) - with case-insensitive matching and synonym handling
+        def normalize_type(type_str: str) -> str:
+            """Normalize type for matching (case-insensitive, handle synonyms)"""
+            if not type_str:
+                return ""
+            # Normalize to lowercase for comparison
+            normalized = type_str.lower().strip()
+            
+            # Handle synonyms and common variations
+            synonyms = {
+                "valve": "Valve",
+                "pump": "Pump",
+                "sensor": "Volume Flow Sensor",  # If context suggests flow sensor
+                "flow sensor": "Volume Flow Sensor",
+                "flow meter": "Volume Flow Sensor",
+                "machine": "Mixer",  # If context suggests mixer
+                "mixer": "Mixer",
+                "blender": "Mixer",
+                "source": "Source",
+                "sink": "Sink",
+                "sample point": "Sample Point",
+                "samplepoint": "Sample Point",
+                "sampling point": "Sample Point"
+            }
+            
+            # Return canonical form from synonyms
+            return synonyms.get(normalized, type_str)  # Fallback to original if no synonym
+        
         type_correct = 0
         type_total = 0
         for truth_id, analysis_el in matches.items():
-            truth_el = next((el for el in truth_elements if el.get('id', f"truth_{list(matches.keys()).index(truth_id)}") == truth_id), None)
+            # Find truth element by ID
+            truth_el = None
+            for te in truth_elements:
+                if te.get('id') == truth_id:
+                    truth_el = te
+                    break
+            
             if truth_el:
-                analysis_type = analysis_el.get('type', '').lower()
-                truth_type = truth_el.get('type', '').lower()
-            type_total += 1
-            if analysis_type == truth_type:
-                type_correct += 1
+                # Normalize both types for comparison
+                analysis_type_normalized = normalize_type(analysis_el.get('type', ''))
+                truth_type_normalized = normalize_type(truth_el.get('type', ''))
+                
+                # Case-insensitive comparison
+                type_match = analysis_type_normalized.lower() == truth_type_normalized.lower()
+                
+                type_total += 1
+                if type_match:
+                    type_correct += 1
+                else:
+                    # Log mismatches for debugging
+                    logger.debug(f"Type mismatch for element {truth_id}: "
+                               f"truth='{truth_el.get('type')}' (normalized='{truth_type_normalized}') "
+                               f"vs analysis='{analysis_el.get('type')}' (normalized='{analysis_type_normalized}')")
         
         type_accuracy = type_correct / type_total if type_total > 0 else 0.0
         

@@ -1,0 +1,150 @@
+<mxfile host="app.diagrams.net" agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36" version="28.2.9">
+  <diagram name="Seite-1" id="UFq5Zxr_FX8MtE6VZH8d">
+    <mxGraphModel dx="1665" dy="743" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="827" pageHeight="1169" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="Input" value="INPUT: P&amp;ID Image (PNG/JPG)" style="shape=cylinder;fillColor=#fff2cc;strokeColor=#d6b65f;fontSize=14;" vertex="1" parent="1">
+          <mxGeometry x="320" y="20" width="200" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="PH0" value="PHASE 0: INITIALIZATION (0% Progress)&#xa;• Load config.yaml&#xa;• Initialize LLM Client&#xa;• Load Symbol Library&#xa;• Detect P&amp;ID type" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;" vertex="1" parent="1">
+          <mxGeometry x="300" y="90" width="240" height="90" as="geometry" />
+        </mxCell>
+        <mxCell id="P1_Meta" value="1.1 Metadata Extraction&#xa;• Extract title, project, date&#xa;• Exclude metadata area" style="shape=note;whiteSpace=wrap;html=1;align=left;fontSize=12;fillColor=#ffe6cc;strokeColor=#d79b00;" vertex="1" parent="1">
+          <mxGeometry x="300" y="220" width="240" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="P1_Legend" value="1.2 Legend Extraction&#xa;• Extract symbol/line map&#xa;• Validate mappings&#xa;• Extract legend symbols for pretraining (NEW)" style="shape=note;whiteSpace=wrap;html=1;align=left;fontSize=12;fillColor=#ffe6cc;strokeColor=#d79b00;" vertex="1" parent="1">
+          <mxGeometry x="300" y="310" width="240" height="90" as="geometry" />
+        </mxCell>
+        <mxCell id="P1_Output" value="Output: Global Knowledge Repository" style="shape=process;fillColor=#fff4c3;strokeColor=#d6b65f;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="310" y="420" width="220" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="P2_Swarm" value="2a. SWARM ANALYZER (Tiled)&#xa;ENHANCEMENTS:&#xa;• Viewshot Examples (NEW)&#xa;• Two-Pass Pipeline" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="150" y="500" width="200" height="100" as="geometry" />
+        </mxCell>
+        <mxCell id="P2_Mono" value="2b. MONOLITH ANALYZER (Quadrant)&#xa;ENHANCED:&#xa;• Viewshot Examples&#xa;• Legend Context" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="490" y="500" width="200" height="100" as="geometry" />
+        </mxCell>
+        <mxCell id="P2_Fusion" value="2c. FUSION ENGINE&#xa;• Merge Swarm + Monolith&#xa;• Deduplicate (IoU matching)&#xa;• Propagate confidence" style="shape=process;fillColor=#cce5ff;strokeColor=#4a86e8;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="320" y="650" width="200" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="P2_Refine" value="2d. PREDICTIVE COMPLETION&#xa;2e. POLYLINE REFINEMENT" style="shape=process;fillColor=#cce5ff;strokeColor=#4a86e8;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="320" y="760" width="200" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="PH3_Loop" value="PHASE 3: SELF-CORRECTION LOOP" style="shape=parallelogram;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=14;" vertex="1" parent="1">
+          <mxGeometry x="300" y="850" width="240" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="P3_Critic" value="1. VALIDATION &amp; CRITIC&#xa;• Multi-Model, Topology, Legend Critics&#xa;2. EARLY STOP? (Target Score / Plateau)" style="shape=note;whiteSpace=wrap;html=1;align=left;fillColor=#f8cecc;strokeColor=#b85450;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="300" y="920" width="240" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="P3_Refine" value="4. ITERATIVE BBOX REFINEMENT&#xa;• Cascade BBox Regression (IoU-Targeting)&#xa;• Anchor-based centering" style="shape=note;whiteSpace=wrap;html=1;align=left;fillColor=#f8cecc;strokeColor=#b85450;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="300" y="1020" width="240" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="PH4_Post" value="PHASE 4: POST-PROCESSING" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=14;" vertex="1" parent="1">
+          <mxGeometry x="300" y="1150" width="240" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="P4_V1" value="4.1-4.4 Refinement &amp; Validation&#xa;• CV-BBOX / Context-Aware Type Inference&#xa;• LLM-ID-Correction / Type Validation" style="shape=note;whiteSpace=wrap;html=1;align=left;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="300" y="1220" width="240" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="P4_V3" value="4.8-4.10 Output Generation&#xa;• KPI Calculation / CGM Data&#xa;• Visualizations (HTML Report, Maps)" style="shape=note;whiteSpace=wrap;html=1;align=left;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="300" y="1320" width="240" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="Output" value="OUTPUT: AnalysisResult" style="shape=cylinder;fillColor=#3cb371;strokeColor=#008000;fontSize=14;" vertex="1" parent="1">
+          <mxGeometry x="320" y="1450" width="200" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="e1" value="" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=classic;startArrow=none;" edge="1" parent="1" source="Input" target="PH0">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e2" value="" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=classic;startArrow=none;" edge="1" parent="1" source="PH0" target="P1_Meta">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e3" value="" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=classic;startArrow=none;" edge="1" parent="1" source="P1_Meta" target="P1_Legend">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e4" value="" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=classic;startArrow=none;" edge="1" parent="1" source="P1_Legend" target="P1_Output">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e5" value="" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=classic;startArrow=none;" edge="1" parent="1" source="P1_Output">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="250" y="480" />
+              <mxPoint x="250" y="480" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e6" value="" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=classic;startArrow=none;" edge="1" parent="1" source="P1_Output">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="590" y="480" />
+              <mxPoint x="590" y="480" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e7" value="" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=classic;startArrow=none;" edge="1" parent="1" source="e5" target="P2_Swarm">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e8" value="" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=classic;startArrow=none;" edge="1" parent="1" source="e6" target="P2_Mono">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e9" value="LLM Call &amp; Parsing" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=classic;startArrow=none;fontSize=12;" edge="1" parent="1" source="P2_Swarm" target="P2_Fusion">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="250" y="630" />
+              <mxPoint x="420" y="630" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e10" value="" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=classic;startArrow=none;fontSize=12;" edge="1" parent="1" source="P2_Mono" target="P2_Fusion">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="590" y="630" />
+              <mxPoint x="420" y="630" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e11" value="" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=classic;startArrow=none;" edge="1" parent="1" source="P2_Fusion" target="P2_Refine">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e12" value="" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=classic;startArrow=none;" edge="1" parent="1" source="P2_Refine" target="PH3_Loop">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e13" value="" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=classic;startArrow=none;" edge="1" parent="1" source="PH3_Loop" target="P3_Critic">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e14" value="Re-Analyze" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=classic;startArrow=none;dashed=1;" edge="1" parent="1" source="P3_Critic" target="P3_Refine">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e15" value="Loop" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=classic;startArrow=none;dashed=1;entryDx=0;entryDy=0;entryPerimeter=0;" edge="1" parent="1" source="P3_Refine" target="P3_Critic">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="280" y="1055" />
+              <mxPoint x="280" y="955" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e16" value="Early Stop / Best Result" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=classic;startArrow=none;" edge="1" parent="1" source="PH3_Loop" target="PH4_Post">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="420" y="1130" />
+              <mxPoint x="420" y="1130" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e17" value="" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=classic;startArrow=none;" edge="1" parent="1" source="PH4_Post" target="P4_V1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e18" value="4.5-4.7 Reasoning" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=classic;startArrow=none;" edge="1" parent="1" source="P4_V1" target="P4_V3">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="420" y="1310" />
+              <mxPoint x="420" y="1310" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e19" value="" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=classic;startArrow=none;" edge="1" parent="1" source="P4_V3" target="Output">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

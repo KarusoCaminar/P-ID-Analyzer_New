@@ -103,13 +103,26 @@ def main():
         
         # Setup logging service
         log_dir = Path("outputs") / "logs"
-        logging_service = LoggingService(log_dir=log_dir)
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_file = log_dir / f"analysis_{Path(args.image_path).stem}.log"
+        LoggingService.setup_logging(
+            log_level=log_level,
+            log_file=log_file
+        )
+        
+        # Get config as dict (safe method)
+        if hasattr(config, 'model_dump'):
+            config_dict = config.model_dump()
+        elif isinstance(config, dict):
+            config_dict = config
+        else:
+            config_dict = config_service.get_raw_config()
         
         # Initialize LLM client
         llm_client = LLMClient(
             project_id=gcp_project_id,
             default_location=gcp_location,
-            config=config.model_dump()
+            config=config_dict
         )
         
         # Initialize knowledge manager
@@ -117,7 +130,7 @@ def main():
             element_type_list_path=str(config_service.get_path("element_type_list") or "element_type_list.json"),
             learning_db_path=str(config_service.get_path("learning_db") or "learning_db.json"),
             llm_handler=llm_client,  # KnowledgeManager uses llm_handler parameter
-            config=config.model_dump()
+            config=config_dict
         )
         
         # Create pipeline coordinator

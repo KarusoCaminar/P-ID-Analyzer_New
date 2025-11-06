@@ -13,14 +13,26 @@ from pathlib import Path
 project_root = Path(__file__).parent
 sys.path.insert(0, str(project_root))
 
-# Check for .env file
-env_file = project_root / ".env"
-if not env_file.exists():
-    print("WARNING: .env file not found!")
-    print("Please create .env file with:")
-    print("  GCP_PROJECT_ID=your_project_id")
-    print("  GCP_LOCATION=us-central1")
-    print()
+# Load .env file automatically
+try:
+    from src.utils.env_loader import load_env_automatically
+    if not load_env_automatically():
+        print("WARNING: .env file not found!")
+        print("Please create .env file with:")
+        print("  GCP_PROJECT_ID=your_project_id")
+        print("  GCP_LOCATION=us-central1")
+        print()
+except (ImportError, Exception):
+    # Fallback: Try direct dotenv import
+    try:
+        from dotenv import load_dotenv
+        env_file = project_root / ".env"
+        if env_file.exists():
+            load_dotenv(env_file)
+        else:
+            print("WARNING: .env file not found!")
+    except ImportError:
+        pass
 
 # Run GUI
 if __name__ == "__main__":

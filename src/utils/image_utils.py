@@ -151,12 +151,18 @@ def generate_raster_grid(
                     ex_y1 = zone['y'] * img_height
                     ex_x2 = ex_x1 + zone['width'] * img_width
                     ex_y2 = ex_y1 + zone['height'] * img_height
-                    if not (right < ex_x1 or x > ex_x2 or bottom < ex_y1 or y > ex_y2):
+                    # FIX: Nur ausschließen wenn Tile KOMPLETT in excluded zone liegt (100% Overlap)
+                    # OLD: if not (right < ex_x1 or x > ex_x2 or bottom < ex_y1 or y > ex_y2):
+                    # NEW: Nur ausschließen wenn Tile komplett innerhalb der Zone liegt
+                    # Wenn Tile nur teilweise überlappt → NICHT ausschließen (analysieren)
+                    # Dies verhindert dass gültige Diagramm-Bereiche ausgeschlossen werden
+                    if (x >= ex_x1 and right <= ex_x2 and y >= ex_y1 and bottom <= ex_y2):
+                        # Tile ist komplett in excluded zone → ausschließen
                         tile_is_excluded = True
                         break
             
             if tile_is_excluded:
-                logger.debug(f"Skipping tile at ({x},{y}) due to excluded zone.")
+                logger.debug(f"Skipping tile at ({x},{y}) due to excluded zone (100% overlap).")
                 continue
             
             tile_image = image.crop(box)
@@ -200,6 +206,161 @@ def is_tile_complex(tile_path: str, canny_threshold1: int = 50, canny_threshold2
         return True  # Default to complex if error
 
 
+def has_legend_cv(image_path: str) -> bool:
+    """
+    Prüft ob das Diagramm eine Legende hat (CV-basiert).
+    
+    Args:
+        image_path: Pfad zum Bild
+        
+    Returns:
+        True wenn Legende erkannt wurde, False sonst
+    """
+    legend_bbox = find_legend_rectangle_cv(image_path, search_region='top_left')
+    return legend_bbox is not None
+
+
+def find_text_stamp_cv(image_path: str) -> Optional[Dict[str, float]]:
+    """
+    Findet Text-Stamp/Metadata-Feld (typischerweise unten rechts) mit OpenCV.
+    
+    Args:
+        image_path: Pfad zum Bild
+        
+    Returns:
+        Dictionary mit normalisierten Koordinaten {'x', 'y', 'width', 'height'} oder None
+    """
+    try:
+        image = cv2.imread(image_path)
+        if image is None:
+            logger.warning(f"CV: Bild konnte nicht geladen werden: {image_path}")
+            return None
+        
+        img_height, img_width, _ = image.shape
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        
+        # Fokus auf untere rechte Ecke (typischer Ort für Text-Stamp)
+        # Suche in den letzten 30% der Breite und Höhe
+        bottom_right_region = gray[int(img_height * 0.7):, int(img_width * 0.7):]
+        
+        # Schwellenwert für Text-Erkennung (Text ist meist dunkel)
+        _, thresh = cv2.threshold(bottom_right_region, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+        
+        # Konturen finden
+        contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        
+        best_rect = None
+        max_area = 0
+        
+        for cnt in contours:
+            x, y, w, h = cv2.boundingRect(cnt)
+            area = w * h
+            
+            # Text-Stamp sollte eine Mindestgröße haben und rechteckig sein
+            if area > (img_width * img_height * 0.001) and w > h * 1.5 and area > max_area:
+                max_area = area
+                # Koordinaten zurück auf vollständiges Bild umrechnen
+                best_rect = {
+                    "x": (int(img_width * 0.7) + x) / img_width,
+                    "y": (int(img_height * 0.7) + y) / img_height,
+                    "width": w / img_width,
+                    "height": h / img_height
+                }
+        
+        if best_rect:
+            logger.info(f"CV: Text-Stamp gefunden bei: {best_rect}")
+            return best_rect
+        else:
+            logger.info("CV: Kein Text-Stamp gefunden.")
+            return None
+            
+    except Exception as e:
+        logger.error(f"Fehler bei CV-Text-Stamp-Erkennung: {e}", exc_info=True)
+        return None
+
+
+def find_legend_rectangle_cv(image_path: str, search_region: str = 'all') -> Optional[Dict[str, float]]:
+    """
+    Findet das größte, schwarze Rechteck (Legende) mit OpenCV.
+    
+    Gibt normalisierte Koordinaten zurück.
+    
+    Args:
+        image_path: Pfad zum Bild
+        search_region: 'all', 'top_left', 'top_right', 'bottom_left', 'bottom_right'
+        
+    Returns:
+        Dictionary mit normalisierten Koordinaten {'x', 'y', 'width', 'height'} oder None
+    """
+    try:
+        image = cv2.imread(image_path)
+        if image is None:
+            logger.warning(f"CV: Bild konnte nicht geladen werden: {image_path}")
+            return None
+        
+        img_height, img_width, _ = image.shape
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        
+        # Region-basierte Suche (Legende ist typischerweise oben links)
+        if search_region == 'top_left':
+            search_area = gray[0:int(img_height * 0.5), 0:int(img_width * 0.5)]
+            offset_x, offset_y = 0, 0
+        elif search_region == 'top_right':
+            search_area = gray[0:int(img_height * 0.5), int(img_width * 0.5):]
+            offset_x, offset_y = int(img_width * 0.5), 0
+        elif search_region == 'bottom_left':
+            search_area = gray[int(img_height * 0.5):, 0:int(img_width * 0.5)]
+            offset_x, offset_y = 0, int(img_height * 0.5)
+        elif search_region == 'bottom_right':
+            search_area = gray[int(img_height * 0.5):, int(img_width * 0.5):]
+            offset_x, offset_y = int(img_width * 0.5), int(img_height * 0.5)
+        else:
+            search_area = gray
+            offset_x, offset_y = 0, 0
+        
+        # Schwellenwert, um schwarze Kanten zu isolieren (sehr aggressiv)
+        # Wir suchen nach Werten < 50 (fast schwarz)
+        _, thresh = cv2.threshold(search_area, 50, 255, cv2.THRESH_BINARY_INV)
+        
+        # Konturen finden
+        contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        
+        best_rect = None
+        max_area = 0
+        
+        for cnt in contours:
+            # Kontur approximieren, um Ecken zu bekommen
+            peri = cv2.arcLength(cnt, True)
+            approx = cv2.approxPolyDP(cnt, 0.02 * peri, True)
+            
+            # Prüfen, ob es (ungefähr) ein Rechteck ist und eine Mindestgröße hat
+            if len(approx) == 4:
+                x, y, w, h = cv2.boundingRect(approx)
+                area = w * h
+                
+                # Es muss eine signifikante Größe haben (z.B. > 1% des Bildes)
+                if area > (img_width * img_height * 0.01) and area > max_area:
+                    max_area = area
+                    # Koordinaten zurück auf vollständiges Bild umrechnen
+                    best_rect = {
+                        "x": (offset_x + x) / img_width,
+                        "y": (offset_y + y) / img_height,
+                        "width": w / img_width,
+                        "height": h / img_height
+                    }
+        
+        if best_rect:
+            logger.info(f"CV: Legenden-Rechteck gefunden bei: {best_rect}")
+            return best_rect
+        else:
+            logger.info("CV: Kein klares Legenden-Rechteck gefunden.")
+            return None
+            
+    except Exception as e:
+        logger.error(f"Fehler bei CV-Rechteckerkennung: {e}", exc_info=True)
+        return None
+
+
 def crop_image_for_correction(
     image_path: str,
     bbox: Dict[str, float],
@@ -212,6 +373,7 @@ def crop_image_for_correction(
     Args:
         image_path: Path to original image
         bbox: Bounding box dictionary with 'x', 'y', 'width', 'height'
+               (can be normalized 0-1 or pixel coordinates)
         context_margin: Margin ratio for context (default 0.05 = 5%)
         
     Returns:
@@ -231,21 +393,71 @@ def crop_image_for_correction(
             logger.error(f"Invalid bbox dimensions for crop_image_for_correction: {bbox}")
             return None
 
-        x1 = int(bbox['x'])
-        y1 = int(bbox['y'])
-        x2 = int(bbox['x'] + bbox['width'])
-        y2 = int(bbox['y'] + bbox['height'])
+        # Detect if bbox is normalized (0-1 range) or pixel coordinates
+        # If max value is <= 1.0, assume normalized; otherwise assume pixel coordinates
+        max_val = max(bbox['x'], bbox['y'], bbox['width'], bbox['height'])
+        is_normalized = max_val <= 1.0 and bbox['x'] >= 0 and bbox['y'] >= 0
+        
+        if is_normalized:
+            # Convert normalized coordinates to pixel coordinates
+            x1 = int(bbox['x'] * img_width)
+            y1 = int(bbox['y'] * img_height)
+            x2 = int((bbox['x'] + bbox['width']) * img_width)
+            y2 = int((bbox['y'] + bbox['height']) * img_height)
+        else:
+            # Already in pixel coordinates
+            x1 = int(bbox['x'])
+            y1 = int(bbox['y'])
+            x2 = int(bbox['x'] + bbox['width'])
+            y2 = int(bbox['y'] + bbox['height'])
 
         margin_x = int((x2 - x1) * context_margin)
         margin_y = int((y2 - y1) * context_margin)
+
+        # Ensure minimum crop size (at least 10 pixels)
+        min_crop_size = 10
+        if x2 - x1 < min_crop_size:
+            center_x = (x1 + x2) // 2
+            x1 = max(0, center_x - min_crop_size // 2)
+            x2 = min(img_width, center_x + min_crop_size // 2)
+        if y2 - y1 < min_crop_size:
+            center_y = (y1 + y2) // 2
+            y1 = max(0, center_y - min_crop_size // 2)
+            y2 = min(img_height, center_y + min_crop_size // 2)
+            # Ensure we have at least min_crop_size
+            if y2 - y1 < min_crop_size:
+                y2 = min(img_height, y1 + min_crop_size)
 
         crop_x1 = max(0, x1 - margin_x)
         crop_y1 = max(0, y1 - margin_y)
         crop_x2 = min(img_width, x2 + margin_x)
         crop_y2 = min(img_height, y2 + margin_y)
 
-        # Prevent invalid crop coordinates
-        if crop_x1 >= crop_x2 or crop_y1 >= crop_y2:
+        # Ensure valid crop coordinates (minimum size after margin)
+        if crop_x2 - crop_x1 < min_crop_size:
+            # Expand to minimum size
+            center_x = (crop_x1 + crop_x2) // 2
+            crop_x1 = max(0, center_x - min_crop_size // 2)
+            crop_x2 = min(img_width, center_x + min_crop_size // 2)
+            # Ensure we have at least min_crop_size
+            if crop_x2 - crop_x1 < min_crop_size:
+                crop_x2 = min(img_width, crop_x1 + min_crop_size)
+        if crop_y2 - crop_y1 < min_crop_size:
+            # Expand to minimum size
+            center_y = (crop_y1 + crop_y2) // 2
+            crop_y1 = max(0, center_y - min_crop_size // 2)
+            crop_y2 = min(img_height, center_y + min_crop_size // 2)
+            # Ensure we have at least min_crop_size
+            if crop_y2 - crop_y1 < min_crop_size:
+                crop_y2 = min(img_height, crop_y1 + min_crop_size)
+
+        # Final validation - ensure we have valid dimensions
+        if crop_x1 >= crop_x2:
+            crop_x2 = min(img_width, crop_x1 + min_crop_size)
+        if crop_y1 >= crop_y2:
+            crop_y2 = min(img_height, crop_y1 + min_crop_size)
+        
+        if crop_x2 - crop_x1 < 1 or crop_y2 - crop_y1 < 1:
             logger.error(f"Invalid crop coordinates: ({crop_x1}, {crop_y1}, {crop_x2}, {crop_y2}). Original bbox: {bbox}")
             return None
 

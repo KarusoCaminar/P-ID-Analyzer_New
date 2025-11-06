@@ -12,6 +12,7 @@ import logging
 import time
 import json
 import yaml
+import shutil
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple
 from datetime import datetime
@@ -80,6 +81,10 @@ class TrainingCamp:
         """
         logger.info("=== STARTING FULL TRAINING CAMP ===")
         logger.info(f"Duration: {duration_hours}h, Max Cycles: {max_cycles}, Sequential: {sequential}")
+        
+        # --- KORREKTUR: Backup der Konfiguration ---
+        self._backup_config()
+        # --- ENDE KORREKTUR ---
         
         start_time = time.time()
         end_time = start_time + (duration_hours * 3600.0)
@@ -170,8 +175,8 @@ class TrainingCamp:
                                         'timestamp': datetime.now().isoformat()
                                     })
                                     
-                                    # Save best configuration to config.yaml
-                                    self._save_best_config(params)
+                                    # Save best configuration to best_parameters.yaml (NOT config.yaml)
+                                    self._save_best_parameters(params)
                                     
                                     logger.info(f"      *** NEW BEST SCORE: {quality_score:.2f} (+{improvement:.2f}) ***")
                                     logger.info(f"      Best Strategy: {strategy_name}")
@@ -355,30 +360,56 @@ class TrainingCamp:
         
         return training_images
     
-    def _save_best_config(self, parameters: Dict[str, Any]) -> None:
-        """Save best configuration to config.yaml."""
+    def _backup_config(self) -> None:
+        """
+        Create a timestamped backup of the main config.yaml before starting.
+        """
         try:
-            # Load current config
-            with open(self.config_path, 'r', encoding='utf-8') as f:
-                config = yaml.safe_load(f) or {}
+            backup_filename = f"config.yaml.bak_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            backup_path = self.config_path.parent / backup_filename
             
-            # Update logic_parameters with best parameters
-            if 'logic_parameters' not in config:
-                config['logic_parameters'] = {}
-            
-            config['logic_parameters'].update(parameters)
-            
-            # Add metadata
-            config['logic_parameters']['_best_config_timestamp'] = datetime.now().isoformat()
-            config['logic_parameters']['_best_score'] = self.training_stats['best_score']
-            
-            # Save config
-            with open(self.config_path, 'w', encoding='utf-8') as f:
-                yaml.dump(config, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
-            
-            logger.info(f"Best configuration saved to {self.config_path}")
+            shutil.copy2(self.config_path, backup_path)
+            logger.info(f"Successfully created configuration backup at: {backup_path}")
         except Exception as e:
-            logger.error(f"Error saving best config: {e}", exc_info=True)
+            logger.error(f"CRITICAL: Failed to create config backup: {e}", exc_info=True)
+            # Wir könnten hier abbrechen, wenn ein Backup zwingend erforderlich ist
+            # raise
+    
+    def _save_best_parameters(self, best_params: Dict[str, Any]) -> None:
+        """
+        Save the best parameters found to a SEPARATE YAML file,
+        instead of overwriting the main config.yaml.
+        
+        Args:
+            best_params: Best parameters found during training
+        """
+        try:
+            # --- KORREKTUR: Nicht config.yaml überschreiben ---
+            # 1. Lade die aktuelle Config als Basis
+            with open(self.config_path, 'r', encoding='utf-8') as f:
+                config_data = yaml.safe_load(f) or {}
+            
+            # 2. Aktualisiere nur die logic_parameters
+            if 'logic_parameters' not in config_data:
+                config_data['logic_parameters'] = {}
+            
+            config_data['logic_parameters'].update(best_params)
+            
+            # 3. Add metadata
+            config_data['logic_parameters']['_best_config_timestamp'] = datetime.now().isoformat()
+            config_data['logic_parameters']['_best_score'] = self.training_stats['best_score']
+            
+            # 4. Speichere in einer NEUEN Datei
+            best_config_path = self.config_path.parent / "best_parameters.yaml"
+            
+            with open(best_config_path, 'w', encoding='utf-8') as f:
+                yaml.dump(config_data, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
+                
+            logger.info(f"Best parameters saved to: {best_config_path}")
+            logger.info("Um diese zu nutzen, benenne 'best_parameters.yaml' in 'config.yaml' um (nachdem du das Original gesichert hast).")
+
+        except Exception as e:
+            logger.error(f"Error saving best parameters: {e}", exc_info=True)
     
     def _initialize_report(self) -> None:
         """Initialize CSV report file."""

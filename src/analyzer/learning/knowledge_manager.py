@@ -183,15 +183,79 @@ class KnowledgeManager:
                 self._symbol_vector_ids = []
                 self._symbol_vector_data = []
     
+    def _convert_bbox_to_dict(self, obj: Any) -> Any:
+        """
+        Convert BBox objects to dictionaries for JSON serialization.
+        
+        Args:
+            obj: Object that might contain BBox objects
+            
+        Returns:
+            Object with BBox objects converted to dicts
+        """
+        # Handle BBox Pydantic models (check class name first)
+        if type(obj).__name__ == 'BBox' or (hasattr(obj, '__class__') and 'BBox' in str(obj.__class__)):
+            # BBox Pydantic model
+            if hasattr(obj, 'model_dump'):
+                # Pydantic v2
+                return obj.model_dump()
+            elif hasattr(obj, 'dict'):
+                # Pydantic v1
+                return obj.dict()
+            elif hasattr(obj, '__dict__'):
+                # Fallback: use __dict__
+                return {
+                    'x': float(getattr(obj, 'x', 0)),
+                    'y': float(getattr(obj, 'y', 0)),
+                    'width': float(getattr(obj, 'width', 0)),
+                    'height': float(getattr(obj, 'height', 0))
+                }
+        
+        # Handle other Pydantic models
+        if hasattr(obj, 'model_dump'):
+            # Pydantic v2 model
+            try:
+                return obj.model_dump()
+            except Exception:
+                # Fallback to dict conversion
+                pass
+        elif hasattr(obj, 'dict'):
+            # Pydantic v1 style
+            try:
+                return obj.dict()
+            except Exception:
+                pass
+        
+        # Handle BBox-like objects with attributes
+        if hasattr(obj, '__dict__') and hasattr(obj, 'x') and hasattr(obj, 'y') and hasattr(obj, 'width') and hasattr(obj, 'height'):
+            return {
+                'x': float(getattr(obj, 'x', 0)),
+                'y': float(getattr(obj, 'y', 0)),
+                'width': float(getattr(obj, 'width', 0)),
+                'height': float(getattr(obj, 'height', 0))
+            }
+        elif isinstance(obj, dict):
+            # Recursively process dictionary
+            return {k: self._convert_bbox_to_dict(v) for k, v in obj.items()}
+        elif isinstance(obj, (list, tuple)):
+            # Recursively process list/tuple
+            return [self._convert_bbox_to_dict(item) for item in obj]
+        else:
+            # Return as-is if not a BBox object
+            return obj
+    
     def save_learning_database(self) -> None:
         """Save learning database thread-safe and process-safe."""
         logger.info(f"Saving learning database to: {self.learning_db_path}")
         try:
             with self.db_process_lock:
                 with self.db_thread_lock:
+                    # Convert BBox objects to dicts before serialization
+                    serializable_db = self._convert_bbox_to_dict(self.learning_database)
+                    
                     # Write to temporary string first for validation
                     temp_json_string = json.dumps(
-                        self.learning_database,
+                        serializable_db,
                         ensure_ascii=False,
                         indent=4
                     )
@@ -357,7 +421,8 @@ class KnowledgeManager:
                             if timestamp.replace(tzinfo=None) < cutoff_date:
                                 report['outdated_removed'] += 1
                                 continue
-                    except:
+                    except (ValueError, AttributeError, TypeError) as e:
+                        logger.debug(f"Invalid timestamp in analysis entry: {e}")
                         pass  # Keep if timestamp is invalid
                     
                     cleaned_solutions[solution_key] = solution_data
@@ -445,18 +510,52 @@ class KnowledgeManager:
                 for type_name, count in low_type_counter.most_common(5)
             ]
             
-            # Extract confidence calibration
+            # Extract confidence calibration (works with or without truth data)
             confidence_scores = [a.get('avg_confidence', 0.0) for a in recent_analyses if a.get('avg_confidence')]
             quality_scores = [a.get('quality_score', 0.0) for a in recent_analyses if a.get('quality_score')]
+            
+            # If no quality scores from truth data, calculate internal quality scores
+            if confidence_scores and not quality_scores:
+                # Calculate internal quality score based on structural metrics
+                internal_quality_scores = []
+                for analysis in recent_analyses:
+                    avg_conf = analysis.get('avg_confidence', 0.0)
+                    num_elements = analysis.get('num_elements', 0)
+                    num_connections = analysis.get('num_connections', 0)
+                    graph_density = analysis.get('graph_density', 0.0)
+                    isolated_elements = analysis.get('isolated_elements', 0)
+                    
+                    # Internal quality score: based on structural metrics
+                    internal_score = 0.0
+                    if avg_conf > 0:
+                        internal_score = avg_conf * 50.0  # Base score from confidence
+                    if num_elements > 0:
+                        internal_score += min(num_elements * 0.5, 25.0)  # Max 25 points for elements
+                    if num_connections > 0:
+                        internal_score += min(num_connections * 0.3, 15.0)  # Max 15 points for connections
+                    if graph_density > 0:
+                        internal_score += min(graph_density * 10.0, 10.0)  # Max 10 points for density
+                    # Penalty for isolated elements
+                    if isolated_elements > 0:
+                        internal_score -= min(isolated_elements * 0.5, 5.0)
+                    
+                    internal_quality_scores.append(max(0.0, min(100.0, internal_score)))
+                
+                quality_scores = internal_quality_scores
             
             if confidence_scores and quality_scores:
                 avg_confidence = sum(confidence_scores) / len(confidence_scores)
                 avg_quality = sum(quality_scores) / len(quality_scores)
                 
+                # Calibration offset: difference between expected (confidence * 100) and actual quality
+                # Positive offset means confidence is too low, negative means too high
+                calibration_offset_normalized = (avg_quality / 100.0) - avg_confidence
+                
                 key_learnings['confidence_calibration'] = {
                     'avg_confidence': avg_confidence,
                     'avg_quality': avg_quality,
-                    'calibration_offset': avg_quality - (avg_confidence * 100)
+                    'calibration_offset': calibration_offset_normalized,
+                    'based_on_truth_data': any(a.get('has_truth_data', False) for a in recent_analyses)
                 }
             
             # Store in learning database
@@ -470,6 +569,24 @@ class KnowledgeManager:
             logger.error(f"Error extracting key learnings: {e}", exc_info=True)
         
         return key_learnings
+    
+    def get_confidence_calibration(self) -> float:
+        """
+        Get confidence calibration offset from learned data.
+        
+        Returns:
+            Calibration offset to apply to confidence scores (normalized: -1.0 to 1.0)
+            Returns 0.0 if no calibration data available
+        """
+        try:
+            key_learnings = self.learning_database.get('key_learnings', {})
+            calibration = key_learnings.get('confidence_calibration', {})
+            offset = calibration.get('calibration_offset', 0.0)
+            # Ensure offset is in reasonable range
+            return max(-1.0, min(1.0, offset))
+        except Exception as e:
+            logger.warning(f"Error retrieving confidence calibration: {e}")
+            return 0.0
     
     def track_critical_errors(
         self,

@@ -11,10 +11,13 @@ Provides:
 import logging
 import json
 import hashlib
+import os
+import uuid
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple
 from PIL import Image
 import numpy as np
+from sklearn.metrics.pairwise import cosine_similarity
 from datetime import datetime
 
 logger = logging.getLogger(__name__)
@@ -67,6 +70,10 @@ class ActiveLearner:
         """
         Automatically learn from pretraining symbols.
         
+        Handles both:
+        - Individual symbol images (single symbol per file)
+        - Symbol collections (multiple symbols in one image, e.g., PDF collections)
+        
         Args:
             pretraining_path: Path to pretraining symbols directory
             model_info: Model configuration for symbol extraction
@@ -79,6 +86,10 @@ class ActiveLearner:
         report = {
             'symbols_processed': 0,
             'symbols_learned': 0,
+            'symbols_updated': 0,
+            'duplicates_found': 0,
+            'collections_processed': 0,
+            'individual_symbols_processed': 0,
             'errors': []
         }
         
@@ -92,39 +103,39 @@ class ActiveLearner:
                 logger.warning(f"No symbol images found in {pretraining_path}")
                 return report
             
-            logger.info(f"Processing {len(image_paths)} pretraining symbols...")
+            logger.info(f"Processing {len(image_paths)} pretraining files...")
+            
+            # Process each file
+            symbols_to_process = []  # List of (label, image, source_name) tuples
             
             for img_path in image_paths:
                 try:
-                    # Load and process symbol image
                     image = Image.open(img_path)
+                    img_width, img_height = image.size
                     
-                    # Extract symbol information using LLM
-                    symbol_info = self._extract_symbol_info(image, model_info)
-                    if not symbol_info:
-                        continue
+                    # Determine if this is a collection (large image) or individual symbol
+                    # Collections are typically > 2000x2000 pixels
+                    is_collection = img_width > 2000 or img_height > 2000
                     
-                    # Add to symbol library
-                    symbol_id = self._generate_symbol_id(img_path, symbol_info)
-                    element_type = symbol_info.get('type', 'Unknown')
-                    metadata = {
-                        'source': 'pretraining',
-                        'image_path': str(img_path),
-                        'extracted_info': symbol_info,
-                        'learned_timestamp': datetime.now().isoformat()
-                    }
-                    
-                    success = self.symbol_library.add_symbol(
-                        symbol_id=symbol_id,
-                        image=image,
-                        element_type=element_type,
-                        metadata=metadata
-                    )
-                    
-                    if success:
-                        report['symbols_learned'] += 1
-                        self.learning_stats['symbols_learned'] += 1
-                        logger.info(f"Learned symbol: {symbol_id} ({element_type})")
+                    if is_collection:
+                        logger.info(f"Detected collection image: {img_path.name} ({img_width}x{img_height})")
+                        report['collections_processed'] += 1
+                        
+                        # Extract symbols from collection
+                        extracted_symbols = self._extract_symbols_from_collection(
+                            image, img_path, model_info
+                        )
+                        symbols_to_process.extend(extracted_symbols)
+                        logger.info(f"Extracted {len(extracted_symbols)} symbols from {img_path.name}")
+                    else:
+                        logger.info(f"Processing individual symbol: {img_path.name}")
+                        report['individual_symbols_processed'] += 1
+                        
+                        # Extract symbol information
+                        symbol_info = self._extract_symbol_info(image, model_info)
+                        if symbol_info:
+                            label = symbol_info.get('label', img_path.stem)
+                            symbols_to_process.append((label, image, str(img_path)))
                     
                     report['symbols_processed'] += 1
                     
@@ -133,8 +144,20 @@ class ActiveLearner:
                     logger.error(error_msg, exc_info=True)
                     report['errors'].append(error_msg)
             
+            # Now integrate all extracted symbols using the improved method
+            if symbols_to_process:
+                logger.info(f"Integrating {len(symbols_to_process)} symbols into library...")
+                integration_report = self._integrate_symbols_batch(
+                    symbols_to_process, model_info
+                )
+                
+                report['symbols_learned'] = integration_report.get('new_symbols', 0)
+                report['symbols_updated'] = integration_report.get('updated_symbols', 0)
+                report['duplicates_found'] = integration_report.get('duplicates', 0)
+            
             self.learning_stats['last_learning_time'] = datetime.now().isoformat()
-            logger.info(f"Pretraining learning complete: {report['symbols_learned']} symbols learned")
+            logger.info(f"Pretraining complete: {report['symbols_learned']} new, "
+                       f"{report['symbols_updated']} updated, {report['duplicates_found']} duplicates")
             
         except Exception as e:
             logger.error(f"Error in learn_from_pretraining_symbols: {e}", exc_info=True)
@@ -159,6 +182,17 @@ class ActiveLearner:
         Returns:
             Learning report
         """
+        # Check if active learning is enabled
+        use_active_learning = self.config.get('logic_parameters', {}).get('use_active_learning', False)
+        if not use_active_learning:
+            logger.debug("Active learning is disabled. Skipping learning from analysis result.")
+            return {
+                'patterns_learned': 0,
+                'corrections_learned': 0,
+                'symbols_updated': 0,
+                'errors': []
+            }
+        
         logger.info("=== Active Learning: Learning from Analysis Result ===")
         
         report = {
@@ -176,14 +210,17 @@ class ActiveLearner:
             # Lower threshold for live learning to learn from all runs
             learn_threshold = 0.5  # Learn from quality >= 50%
             
+            # PERFORMANCE: Batch all learning operations and save only once at the end
+            patterns_to_store = []
+            high_confidence_patterns = []
+            truth_matched_patterns = []
+            
             if quality_score >= learn_threshold:
                 # Extract patterns from current analysis
                 patterns = self._extract_successful_patterns(elements, connections)
-                for pattern in patterns:
-                    self._store_pattern(pattern)
-                    report['patterns_learned'] += 1
-                    self.learning_stats['patterns_learned'] += 1
-                logger.info(f"Live learning: Learned {len(patterns)} successful patterns")
+                patterns_to_store.extend(patterns)
+                report['patterns_learned'] += len(patterns)
+                self.learning_stats['patterns_learned'] += len(patterns)
             
             # LIVE LEARNING: Always learn from high confidence elements (even if overall score is low)
             high_confidence_elements = [el for el in elements if el.get('confidence', 0) >= 0.8]
@@ -197,20 +234,18 @@ class ActiveLearner:
                         'confidence': el.get('confidence'),
                         'timestamp': datetime.now().isoformat()
                     }
-                    self._store_pattern(pattern)
+                    high_confidence_patterns.append(pattern)
                     report['patterns_learned'] += 1
-                logger.info(f"Live learning: Stored {len(high_confidence_elements)} high-confidence elements as examples")
             
             # LIVE LEARNING: Learn from corrections IMMEDIATELY (supervised learning with truth data)
+            corrections_to_learn = []
             if truth_data:
                 corrections = self._compare_with_truth(analysis_result, truth_data)
-                for correction in corrections:
-                    self._learn_correction(correction)
-                    report['corrections_learned'] += 1
-                    self.learning_stats['corrections_applied'] += 1
-                logger.info(f"Live learning: Learned {len(corrections)} corrections from truth data")
+                corrections_to_learn.extend(corrections)
+                report['corrections_learned'] += len(corrections)
+                self.learning_stats['corrections_applied'] += len(corrections)
                 
-                # Also store successful matches as positive examples
+                # Also store successful matches as positive examples (ID-based matching)
                 matched_elements = [el for el in elements if el.get('id') in [t_el.get('id') for t_el in truth_data.get('elements', [])]]
                 if matched_elements:
                     # Store matched elements for future reference
@@ -222,39 +257,28 @@ class ActiveLearner:
                             'confidence': el.get('confidence'),
                             'timestamp': datetime.now().isoformat()
                         }
-                        self._store_pattern(pattern)
+                        truth_matched_patterns.append(pattern)
                         report['patterns_learned'] += 1
-                    logger.info(f"Live learning: Stored {len(matched_elements)} truth-matched elements as positive examples")
             
-            # LIVE LEARNING: Store analysis metadata for future reference
-            analysis_metadata = {
-                'timestamp': datetime.now().isoformat(),
-                'quality_score': quality_score,
-                'element_count': len(elements),
-                'connection_count': len(connections),
-                'element_types': list(set([el.get('type') for el in elements if el.get('type')])),
-                'avg_confidence': sum([el.get('confidence', 0) for el in elements]) / len(elements) if elements else 0
-            }
-            
-            # Store in learning database
-            if hasattr(self.knowledge_manager, 'learning_database'):
-                recent_analyses = self.knowledge_manager.learning_database.setdefault('recent_analyses', [])
-                recent_analyses.append(analysis_metadata)
+            # PERFORMANCE: Store all patterns in batch (single database save at the end)
+            if patterns_to_store or high_confidence_patterns or truth_matched_patterns:
+                for pattern in patterns_to_store:
+                    self._store_pattern(pattern, save_immediately=False)  # Don't save immediately
+                for pattern in high_confidence_patterns:
+                    self._store_pattern(pattern, save_immediately=False)  # Don't save immediately
+                for pattern in truth_matched_patterns:
+                    self._store_pattern(pattern, save_immediately=False)  # Don't save immediately
                 
-                # Keep only last 100 analyses for performance
-                if len(recent_analyses) > 100:
-                    recent_analyses = recent_analyses[-100:]
-                    self.knowledge_manager.learning_database['recent_analyses'] = recent_analyses
-                
-                # Save learning database immediately
-                if hasattr(self.knowledge_manager, 'save_learning_database'):
-                    try:
-                        self.knowledge_manager.save_learning_database()
-                        logger.debug("Live learning: Saved analysis metadata to learning database")
-                    except Exception as e:
-                        logger.warning(f"Error saving learning database: {e}")
+                # Log summary
+                total_patterns = len(patterns_to_store) + len(high_confidence_patterns) + len(truth_matched_patterns)
+                logger.info(f"Live learning: Stored {total_patterns} patterns (batch mode)")
             
-            # Update symbol library with new visual examples
+            # Learn corrections in batch (before saving)
+            for correction in corrections_to_learn:
+                self._learn_correction(correction, save_immediately=False)  # Don't save immediately
+            
+            # Update symbol library with new visual examples (but don't save immediately)
+            symbol_updates = []
             for element in elements:
                 if element.get('bbox') and element.get('type'):
                     # Extract visual symbol from element bbox
@@ -272,11 +296,86 @@ class ActiveLearner:
                             symbol_id=symbol_id,
                             image=symbol_image,
                             element_type=element_type,
-                            metadata=metadata
+                            metadata=metadata,
+                            save_immediately=False  # Batch save
                         )
                         
                         if success:
+                            symbol_updates.append(symbol_id)
                             report['symbols_updated'] += 1
+            
+            # PERFORMANCE: Save symbol library once at the end (if updates were made)
+            if symbol_updates:
+                try:
+                    self.symbol_library.save_to_learning_db()
+                    logger.debug(f"Saved {len(symbol_updates)} symbol updates to learning database")
+                except Exception as e:
+                    logger.warning(f"Error saving symbol library: {e}")
+            
+            # PERFORMANCE: Single database save at the end of all learning operations
+            if (patterns_to_store or high_confidence_patterns or truth_matched_patterns or 
+                corrections_to_learn or symbol_updates):
+                if hasattr(self.knowledge_manager, 'save_learning_database'):
+                    try:
+                        self.knowledge_manager.save_learning_database()
+                        logger.debug(f"Live learning: Saved all learning data (patterns, corrections, symbols) in batch")
+                    except Exception as e:
+                        logger.warning(f"Error saving learning database: {e}")
+            
+            # LIVE LEARNING: Store analysis metadata for future reference
+            analysis_metadata = {
+                'timestamp': datetime.now().isoformat(),
+                'quality_score': quality_score,
+                'element_count': len(elements),
+                'connection_count': len(connections),
+                'element_types': list(set([el.get('type') for el in elements if el.get('type')])),
+                'avg_confidence': sum([el.get('confidence', 0) for el in elements]) / len(elements) if elements else 0
+            }
+            
+            # Store in learning database (but don't save yet - will be saved once at end of iteration)
+            if hasattr(self.knowledge_manager, 'learning_database'):
+                recent_analyses = self.knowledge_manager.learning_database.setdefault('recent_analyses', [])
+                recent_analyses.append(analysis_metadata)
+                
+                # Keep only last 100 analyses for performance
+                if len(recent_analyses) > 100:
+                    recent_analyses = recent_analyses[-100:]
+                    self.knowledge_manager.learning_database['recent_analyses'] = recent_analyses
+            
+            # Update symbol library with new visual examples (but don't save immediately)
+            symbol_updates = []
+            for element in elements:
+                if element.get('bbox') and element.get('type'):
+                    # Extract visual symbol from element bbox
+                    symbol_image = self._extract_element_image(element, analysis_result.get('image_path'))
+                    if symbol_image:
+                        symbol_id = self._generate_symbol_id_from_element(element)
+                        element_type = element.get('type')
+                        metadata = {
+                            'source': 'analysis_result',
+                            'element_id': element.get('id'),
+                            'learned_timestamp': datetime.now().isoformat()
+                        }
+                        
+                        success = self.symbol_library.add_symbol(
+                            symbol_id=symbol_id,
+                            image=symbol_image,
+                            element_type=element_type,
+                            metadata=metadata,
+                            save_immediately=False  # Batch save
+                        )
+                        
+                        if success:
+                            symbol_updates.append(symbol_id)
+                            report['symbols_updated'] += 1
+            
+            # PERFORMANCE: Save symbol library once at the end (if updates were made)
+            if symbol_updates:
+                try:
+                    self.symbol_library.save_to_learning_db()
+                    logger.debug(f"Saved {len(symbol_updates)} symbol updates to learning database")
+                except Exception as e:
+                    logger.warning(f"Error saving symbol library: {e}")
             
             self.learning_stats['last_learning_time'] = datetime.now().isoformat()
             logger.info(f"Analysis learning complete: {report['patterns_learned']} patterns, {report['corrections_learned']} corrections")
@@ -345,13 +444,277 @@ class ActiveLearner:
         
         return report
     
+    def _extract_symbols_from_collection(
+        self,
+        collection_image: Image.Image,
+        collection_path: Path,
+        model_info: Dict[str, Any]
+    ) -> List[Tuple[str, Image.Image, str]]:
+        """
+        Extract individual symbols from a large collection image (e.g., PDF symbol collection).
+        
+        Uses COMBINED approach:
+        1. Computer Vision (OpenCV): Contour detection, edge detection, text detection
+        2. LLM refinement: Precise type detection and label extraction
+        
+        Args:
+            collection_image: PIL Image of the collection
+            collection_path: Path to the collection image file
+            model_info: Model configuration
+            
+        Returns:
+            List of (label, symbol_image, source_name) tuples
+        """
+        symbols = []
+        
+        try:
+            # Save collection image temporarily
+            import tempfile
+            temp_file = tempfile.NamedTemporaryFile(suffix='.png', delete=False)
+            collection_image.save(temp_file.name)
+            temp_path = temp_file.name
+            
+            # STEP 1: Computer Vision extraction (fast, precise bboxes)
+            from src.utils.symbol_extraction import extract_symbols_with_cv, refine_symbol_bbox_with_cv
+            
+            cv_symbols = extract_symbols_with_cv(
+                temp_path,
+                min_symbol_size=30,
+                max_symbol_size=800,
+                text_padding=15
+            )
+            
+            logger.info(f"CV extraction found {len(cv_symbols)} candidate regions in {collection_path.name}")
+            
+            # STEP 2: LLM refinement for type detection and label extraction
+            # Process each CV-detected region with LLM
+            img_width, img_height = collection_image.size
+            
+            for idx, cv_symbol in enumerate(cv_symbols):
+                try:
+                    # Get normalized bbox from CV
+                    normalized_bbox = cv_symbol.get('normalized_bbox', {})
+                    if not normalized_bbox:
+                        continue
+                    
+                    # Convert to pixel coordinates
+                    x = int(normalized_bbox.get('x', 0) * img_width)
+                    y = int(normalized_bbox.get('y', 0) * img_height)
+                    w = int(normalized_bbox.get('width', 0) * img_width)
+                    h = int(normalized_bbox.get('height', 0) * img_height)
+                    
+                    # Validate and clip
+                    if w <= 0 or h <= 0 or x < 0 or y < 0:
+                        continue
+                    if x + w > img_width:
+                        w = img_width - x
+                    if y + h > img_height:
+                        h = img_height - y
+                    
+                    # Add padding for context
+                    padding = 10
+                    x_pad = max(0, x - padding)
+                    y_pad = max(0, y - padding)
+                    w_pad = min(img_width - x_pad, w + 2 * padding)
+                    h_pad = min(img_height - y_pad, h + 2 * padding)
+                    
+                    # Crop symbol with padding
+                    symbol_crop = collection_image.crop((x_pad, y_pad, x_pad + w_pad, y_pad + h_pad))
+                    
+                    # Refine bbox with CV (remove white space)
+                    refined_bbox = refine_symbol_bbox_with_cv(symbol_crop)
+                    
+                    # Apply refinement to crop
+                    crop_w, crop_h = symbol_crop.size
+                    refine_x = int(refined_bbox['x'] * crop_w)
+                    refine_y = int(refined_bbox['y'] * crop_h)
+                    refine_w = int(refined_bbox['width'] * crop_w)
+                    refine_h = int(refined_bbox['height'] * crop_h)
+                    
+                    if refine_w > 0 and refine_h > 0:
+                        symbol_crop = symbol_crop.crop((refine_x, refine_y, refine_x + refine_w, refine_y + refine_h))
+                    
+                    # STEP 3: LLM for type detection and label extraction
+                    # Save refined crop temporarily
+                    temp_crop = tempfile.NamedTemporaryFile(suffix='.png', delete=False)
+                    symbol_crop.save(temp_crop.name)
+                    temp_crop_path = temp_crop.name
+                    
+                    # LLM prompt for type detection
+                    llm_prompt = """Analyze this P&ID symbol image and extract:
+1. Element type (e.g., Pump, Valve, Tank, Volume Flow Sensor, Mixer, Source, Sink)
+2. Label if visible (e.g., "P-101", "V-42", "FT-10")
+
+CRITICAL: Use EXACT type names (Valve, Pump, Volume Flow Sensor, etc.) - CASE-SENSITIVE.
+
+Return as JSON:
+{
+  "type": "Valve",
+  "label": "V-101"
+}"""
+                    
+                    llm_response = self.llm_client.call_model(
+                        model_info,
+                        system_prompt="You are an expert in P&ID symbol identification.",
+                        user_prompt=llm_prompt,
+                        image_path=temp_crop_path
+                    )
+                    
+                    # Parse LLM response
+                    element_type = 'Unknown'
+                    label = f"{collection_path.stem}_sym_{idx}"
+                    
+                    if isinstance(llm_response, dict):
+                        element_type = llm_response.get('type', 'Unknown')
+                        label = llm_response.get('label', label)
+                    elif isinstance(llm_response, str):
+                        try:
+                            llm_data = json.loads(llm_response)
+                            element_type = llm_data.get('type', 'Unknown')
+                            label = llm_data.get('label', label)
+                        except json.JSONDecodeError:
+                            logger.debug(f"Could not parse LLM response for symbol {idx}")
+                    
+                    # Cleanup temp crop file
+                    try:
+                        os.unlink(temp_crop_path)
+                    except Exception:
+                        pass
+                    
+                    # Add symbol with refined info
+                    symbols.append((label, symbol_crop, str(collection_path)))
+                    logger.debug(f"Extracted symbol {idx}: {label} ({element_type}) from {collection_path.name} "
+                               f"[CV confidence: {cv_symbol.get('confidence', 0.5):.2f}]")
+                    
+                except Exception as e:
+                    logger.warning(f"Error extracting symbol {idx} from {collection_path.name}: {e}")
+                    continue
+            
+            # If CV extraction found nothing, fallback to LLM-only extraction
+            if not symbols:
+                logger.info(f"CV extraction found no symbols, falling back to LLM-only extraction for {collection_path.name}")
+                symbols = self._extract_symbols_with_llm_only(collection_image, collection_path, model_info, temp_path)
+            
+            # Cleanup temp file
+            try:
+                os.unlink(temp_path)
+            except Exception:
+                pass
+            
+        except Exception as e:
+            logger.error(f"Error extracting symbols from collection {collection_path}: {e}", exc_info=True)
+        
+        return symbols
+    
+    def _extract_symbols_with_llm_only(
+        self,
+        collection_image: Image.Image,
+        collection_path: Path,
+        model_info: Dict[str, Any],
+        temp_path: str
+    ) -> List[Tuple[str, Image.Image, str]]:
+        """Fallback: LLM-only extraction if CV fails."""
+        symbols = []
+        
+        try:
+            # Prompt for symbol detection and segmentation
+            prompt = """Analyze this P&ID symbol collection image and extract ALL individual symbols.
+
+For each symbol, provide:
+1. Bounding box coordinates (x, y, width, height in normalized 0-1 coordinates)
+2. Element type (e.g., Pump, Valve, Tank, Volume Flow Sensor)
+3. Label if visible (e.g., "P-101", "V-42")
+
+Return as JSON with this structure:
+{
+  "symbols": [
+    {
+      "bbox": {"x": 0.1, "y": 0.2, "width": 0.05, "height": 0.05},
+      "type": "Valve",
+      "label": "V-101"
+    },
+    ...
+  ]
+}
+
+CRITICAL: Extract ALL visible symbols. Use EXACT type names (Valve, Pump, Volume Flow Sensor, etc.)."""
+            
+            system_prompt = """You are an expert in P&ID symbol detection and segmentation.
+Extract ALL individual symbols from this collection image with precise bounding boxes."""
+            
+            response = self.llm_client.call_model(
+                model_info,
+                system_prompt=system_prompt,
+                user_prompt=prompt,
+                image_path=temp_path
+            )
+            
+            # Parse response
+            if isinstance(response, str):
+                try:
+                    response = json.loads(response)
+                except json.JSONDecodeError:
+                    logger.warning(f"Could not parse symbol extraction response for {collection_path.name}")
+                    return symbols
+            
+            if not isinstance(response, dict) or 'symbols' not in response:
+                logger.warning(f"Invalid response format for {collection_path.name}")
+                return symbols
+            
+            # Extract symbols from collection
+            img_width, img_height = collection_image.size
+            detected_symbols = response.get('symbols', [])
+            
+            logger.info(f"LLM detected {len(detected_symbols)} symbols in {collection_path.name}")
+            
+            for idx, symbol_data in enumerate(detected_symbols):
+                try:
+                    bbox = symbol_data.get('bbox', {})
+                    if not bbox:
+                        continue
+                    
+                    # Convert normalized bbox to pixel coordinates
+                    x = int(bbox.get('x', 0) * img_width)
+                    y = int(bbox.get('y', 0) * img_height)
+                    w = int(bbox.get('width', 0) * img_width)
+                    h = int(bbox.get('height', 0) * img_height)
+                    
+                    # Validate bbox
+                    if w <= 0 or h <= 0 or x < 0 or y < 0:
+                        continue
+                    if x + w > img_width or y + h > img_height:
+                        # Clip to image bounds
+                        w = min(w, img_width - x)
+                        h = min(h, img_height - y)
+                    
+                    # Crop symbol from collection
+                    symbol_crop = collection_image.crop((x, y, x + w, y + h))
+                    
+                    # Get label and type
+                    label = symbol_data.get('label', f"{collection_path.stem}_sym_{idx}")
+                    element_type = symbol_data.get('type', 'Unknown')
+                    
+                    symbols.append((label, symbol_crop, str(collection_path)))
+                    logger.debug(f"Extracted symbol {idx}: {label} ({element_type}) from {collection_path.name}")
+                    
+                except Exception as e:
+                    logger.warning(f"Error extracting symbol {idx} from {collection_path.name}: {e}")
+                    continue
+            
+        except Exception as e:
+            logger.error(f"Error in LLM-only extraction: {e}", exc_info=True)
+        
+        return symbols
+    
     def _extract_symbol_info(self, image: Image.Image, model_info: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """Extract symbol information from image using LLM."""
         try:
             prompt = """Analyze this P&ID symbol image and extract:
-1. Element type (e.g., Pump, Valve, Tank)
+1. Element type (e.g., Pump, Valve, Tank, Volume Flow Sensor)
 2. Key visual features
 3. Label if visible
+
+CRITICAL: Use EXACT type names (Valve, Pump, Volume Flow Sensor, etc.) - CASE-SENSITIVE.
 
 Return as JSON with keys: type, features, label."""
             
@@ -377,13 +740,135 @@ Return as JSON with keys: type, features, label."""
             elif isinstance(response, str):
                 try:
                     return json.loads(response)
-                except:
+                except (json.JSONDecodeError, ValueError, TypeError) as e:
+                    logger.debug(f"Error parsing symbol info JSON: {e}")
                     return {'type': 'Unknown', 'features': [], 'label': ''}
             
             return None
         except Exception as e:
             logger.error(f"Error extracting symbol info: {e}", exc_info=True)
             return None
+    
+    def _integrate_symbols_batch(
+        self,
+        symbols_to_process: List[Tuple[str, Image.Image, str]],
+        model_info: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        Integrate symbols into library with duplicate checking via embedding similarity.
+        
+        Similar to the old version's integrate_symbol_library method.
+        
+        Args:
+            symbols_to_process: List of (label, image, source_name) tuples
+            model_info: Model configuration
+            
+        Returns:
+            Integration report
+        """
+        report = {
+            'new_symbols': 0,
+            'updated_symbols': 0,
+            'duplicates': 0,
+            'errors': []
+        }
+        
+        try:
+            # Get similarity threshold from config
+            similarity_threshold = self.config.get('logic_parameters', {}).get(
+                'visual_symbol_similarity_threshold', 0.85
+            )
+            
+            logger.info(f"Integrating {len(symbols_to_process)} symbols with threshold {similarity_threshold}")
+            
+            for label, symbol_image, source_name in symbols_to_process:
+                try:
+                    # Generate embedding for new symbol
+                    embedding = self.llm_client.get_image_embedding(symbol_image)
+                    if not embedding:
+                        logger.warning(f"Could not generate embedding for symbol '{label}'")
+                        continue
+                    
+                    embedding_array = np.array([embedding], dtype=np.float32)
+                    
+                    # Check for duplicates via similarity search
+                    similar_symbols = self.symbol_library.find_similar_symbols(
+                        symbol_image,
+                        top_k=1,
+                        threshold=similarity_threshold
+                    )
+                    
+                    if similar_symbols and len(similar_symbols) > 0:
+                        # Duplicate found - update existing symbol
+                        symbol_id, similarity_score, existing_metadata = similar_symbols[0]
+                        report['duplicates'] += 1
+                        report['updated_symbols'] += 1
+                        
+                        logger.info(f"Symbol '{label}' is duplicate of {symbol_id} "
+                                  f"(similarity: {similarity_score:.3f})")
+                        
+                        # Update metadata but keep same ID
+                        updated_metadata = existing_metadata.copy()
+                        updated_metadata['source'] = source_name
+                        updated_metadata['updated_timestamp'] = datetime.now().isoformat()
+                        updated_metadata['label'] = label
+                        
+                        # Note: We don't update the symbol here, just log it
+                        # The duplicate check prevents adding duplicates
+                        continue
+                    
+                    # New symbol - extract info and add
+                    symbol_info = self._extract_symbol_info(symbol_image, model_info)
+                    if not symbol_info:
+                        # Fallback: use label as type hint
+                        element_type = label.split('-')[0] if '-' in label else 'Unknown'
+                        symbol_info = {'type': element_type, 'label': label}
+                    else:
+                        element_type = symbol_info.get('type', 'Unknown')
+                    
+                    # Generate unique ID
+                    symbol_id = f"sym_{uuid.uuid4().hex[:12]}"
+                    
+                    metadata = {
+                        'source': 'pretraining',
+                        'source_file': source_name,
+                        'label': label,
+                        'extracted_info': symbol_info,
+                        'learned_timestamp': datetime.now().isoformat()
+                    }
+                    
+                    # Add to symbol library
+                    success = self.symbol_library.add_symbol(
+                        symbol_id=symbol_id,
+                        image=symbol_image,
+                        element_type=element_type,
+                        metadata=metadata,
+                        save_immediately=False  # Batch save at the end
+                    )
+                    
+                    if success:
+                        report['new_symbols'] += 1
+                        logger.info(f"Added new symbol: {symbol_id} ({element_type}) - '{label}'")
+                    else:
+                        report['errors'].append(f"Failed to add symbol '{label}'")
+                    
+                except Exception as e:
+                    error_msg = f"Error integrating symbol '{label}': {e}"
+                    logger.error(error_msg, exc_info=True)
+                    report['errors'].append(error_msg)
+            
+            # Save symbol library once at the end (batch save)
+            try:
+                self.symbol_library.save_to_learning_db()
+                logger.info("Symbol library saved to database")
+            except Exception as e:
+                logger.warning(f"Error saving symbol library: {e}")
+            
+        except Exception as e:
+            logger.error(f"Error in _integrate_symbols_batch: {e}", exc_info=True)
+            report['errors'].append(str(e))
+        
+        return report
     
     def _generate_symbol_id(self, image_path: Path, symbol_info: Dict[str, Any]) -> str:
         """Generate unique ID for symbol."""
@@ -482,7 +967,7 @@ Return as JSON with keys: type, features, label."""
         
         return corrections
     
-    def _learn_correction(self, correction: Dict[str, Any]) -> None:
+    def _learn_correction(self, correction: Dict[str, Any], save_immediately: bool = True) -> None:
         """Learn from a correction."""
         try:
             # Store correction directly in knowledge manager
@@ -509,13 +994,20 @@ Return as JSON with keys: type, features, label."""
                     'correction': correction_data,
                     'timestamp': datetime.now().isoformat()
                 }
-                self.knowledge_manager.save_learning_database()
+                # Only save immediately if requested (for performance: batch saves)
+                if save_immediately:
+                    self.knowledge_manager.save_learning_database()
                 logger.debug(f"Learned correction: {correction_hash}")
         except Exception as e:
             logger.error(f"Error learning correction: {e}", exc_info=True)
     
-    def _store_pattern(self, pattern: Dict[str, Any]) -> None:
-        """Store a learned pattern."""
+    def _store_pattern(self, pattern: Dict[str, Any], save_immediately: bool = True) -> None:
+        """Store a learned pattern.
+        
+        Args:
+            pattern: Pattern dictionary to store
+            save_immediately: If True, save database immediately. If False, defer saving.
+        """
         try:
             patterns = self.knowledge_manager.learning_database.setdefault(
                 'successful_patterns', {}
@@ -524,7 +1016,8 @@ Return as JSON with keys: type, features, label."""
             pattern_key = f"{pattern.get('type')}_{hashlib.sha256(str(pattern).encode()).hexdigest()[:8]}"
             patterns[pattern_key] = pattern
             
-            self.knowledge_manager.save_learning_database()
+            if save_immediately:
+                self.knowledge_manager.save_learning_database()
         except Exception as e:
             logger.error(f"Error storing pattern: {e}", exc_info=True)
     

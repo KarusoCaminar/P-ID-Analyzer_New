@@ -50,6 +50,8 @@ paths:
   # NEU: Verzeichnis für den LLM-Disk-Cache. Wird relativ zum Projekt-Root interpretiert.
   llm_cache_dir: ".pni_analyzer_cache"
   learned_symbols_images_dir: "learned_symbols_images"
+  # Pretraining symbols directory (PDF collections, legend symbols, etc.)
+  pretraining_symbols: "training_data/pretraining_symbols"
 
 # Definition aller verfügbaren Modelle, die von der GUI und dem CLI genutzt werden
 models:
@@ -57,72 +59,86 @@ models:
     id: "gemini-2.5-pro"
     access_method: "gemini"
     location: "us-central1"
-    description: "Googles Top-Modell für höchste Genauigkeit bei komplexen Diagrammen."
+    description: "Googles Top-Modell für höchste Genauigkeit bei komplexen Diagrammen. Optimiert für präzise Symbolerkennung."
     generation_config:
-      temperature: 0
-      top_p: 0.95
-      top_k: 40
-      max_output_tokens: 65530
+      temperature: 0.0          # Deterministic - maximale Präzision für Symbolerkennung
+      top_p: 0.1                # Very deterministic - schmale Verteilung für konsistente Ergebnisse
+      top_k: 1                  # Most deterministic - nur Top-Token für maximale Konsistenz
+      max_output_tokens: 16384  # CRITICAL FIX: Increased from 8192 to 16384 to prevent truncation (MAX_TOKENS)
+      candidate_count: 1        # Single response für Geschwindigkeit (optional: 2-3 für Best-of-N)
+      response_mime_type: "application/json"  # Erzwingt strukturierte JSON-Ausgabe
   "Google Gemini 2.5 Flash":
     id: "gemini-2.5-flash"
     access_method: "gemini"
     location: "us-central1"
-    description: "Guter Kompromiss aus Geschwindigkeit und Qualität für Standardanalysen."
+    description: "Guter Kompromiss aus Geschwindigkeit und Qualität für Standardanalysen. Optimiert für präzise Symbolerkennung."
     generation_config:
-      temperature: 0
-      top_p: 0.95
-      top_k: 40
-      max_output_tokens: 65530
+      temperature: 0.0          # Deterministic - maximale Präzision für Symbolerkennung
+      top_p: 0.1                # Very deterministic - schmale Verteilung für konsistente Ergebnisse
+      top_k: 1                  # Most deterministic - nur Top-Token für maximale Konsistenz
+      max_output_tokens: 8192   # Gemini 2.5 Flash Standard-Limit (nicht 65530)
+      candidate_count: 1        # Single response für Geschwindigkeit (optional: 2-3 für Best-of-N)
+      response_mime_type: "application/json"  # Erzwingt strukturierte JSON-Ausgabe
   "Google Gemini 2.0 Flash":
     id: "gemini-2.0-flash"
     access_method: "gemini"
     location: "us-central1"
-    description: "Ein schnelles und kostengünstiges Modell der 2.0-Generation."
+    description: "Ein schnelles und kostengünstiges Modell der 2.0-Generation. Optimiert für präzise Symbolerkennung."
     generation_config:
-      temperature: 0
-      top_p: 0.95
-      top_k: 40
-      max_output_tokens: 8192
+      temperature: 0.0          # Deterministic - maximale Präzision für Symbolerkennung
+      top_p: 0.1                # Very deterministic - schmale Verteilung für konsistente Ergebnisse
+      top_k: 1                  # Most deterministic - nur Top-Token für maximale Konsistenz
+      max_output_tokens: 8192   # Standard-Limit für Gemini 2.0 Modelle
+      candidate_count: 1        # Single response für Geschwindigkeit
+      response_mime_type: "application/json"  # Erzwingt strukturierte JSON-Ausgabe
   "Google Gemini 2.0 Flash-Lite":
     id: "gemini-2.0-flash-lite"
     access_method: "gemini"
     location: "us-central1"
-    description: "Kosteneffizientes Modell mit großem Kontextfenster."
+    description: "Kosteneffizientes Modell mit großem Kontextfenster. Optimiert für präzise Symbolerkennung."
     generation_config:
-      temperature: 0
-      top_p: 0.95
-      top_k: 40
-      max_output_tokens: 8192
+      temperature: 0.0          # Deterministic - maximale Präzision für Symbolerkennung
+      top_p: 0.1                # Very deterministic - schmale Verteilung für konsistente Ergebnisse
+      top_k: 1                  # Most deterministic - nur Top-Token für maximale Konsistenz
+      max_output_tokens: 8192   # Standard-Limit für Gemini 2.0 Modelle
+      candidate_count: 1        # Single response für Geschwindigkeit
+      response_mime_type: "application/json"  # Erzwingt strukturierte JSON-Ausgabe
   "Google Gemini 2.5 Flash-Lite (Preview)":
     id: "gemini-2.5-flash-lite-preview-06-17"
     access_method: "gemini"
     location: "us-central1"
-    description: "Neuestes, extrem schnelles Preview-Modell, ideal für schnelle Iterationen."
+    description: "Neuestes, extrem schnelles Preview-Modell, ideal für schnelle Iterationen. Optimiert für präzise Symbolerkennung."
     generation_config:
-      temperature: 0
-      top_p: 0.95
-      top_k: 40
-      max_output_tokens: 65530
+      temperature: 0.0          # Deterministic - maximale Präzision für Symbolerkennung
+      top_p: 0.1                # Very deterministic - schmale Verteilung für konsistente Ergebnisse
+      top_k: 1                  # Most deterministic - nur Top-Token für maximale Konsistenz
+      max_output_tokens: 8192   # Gemini 2.5 Flash-Lite Standard-Limit (nicht 65530)
+      candidate_count: 1        # Single response für Geschwindigkeit
+      response_mime_type: "application/json"  # Erzwingt strukturierte JSON-Ausgabe
   "Google Gemini 1.5 Flash":
     id: "gemini-1.5-flash"
     access_method: "gemini"
     location: "us-central1"
-    description: "Schnelles und kosteneffizientes Gemini-Modell."
+    description: "Schnelles und kosteneffizientes Gemini-Modell. Optimiert für präzise Symbolerkennung."
     generation_config:
-      temperature: 0.1
-      top_p: 0.95
-      top_k: 40
-      max_output_tokens: 8192
+      temperature: 0.0          # Deterministic - maximale Präzision für Symbolerkennung (reduced from 0.1)
+      top_p: 0.1                # Very deterministic - schmale Verteilung (reduced from 0.95)
+      top_k: 1                  # Most deterministic - nur Top-Token (reduced from 40)
+      max_output_tokens: 8192   # Standard-Limit für Gemini 1.5 Modelle
+      candidate_count: 1        # Single response für Geschwindigkeit
+      response_mime_type: "application/json"  # Erzwingt strukturierte JSON-Ausgabe
   "Google Gemini 1.5 Pro":
     id: "gemini-1.5-pro"
     access_method: "gemini"
     location: "us-central1"
-    description: "Leistungsstarkes Gemini-Modell für komplexe Aufgaben."
+    description: "Leistungsstarkes Gemini-Modell für komplexe Aufgaben. Optimiert für präzise Symbolerkennung."
     generation_config:
-      temperature: 0.1
-      top_p: 0.95
-      top_k: 40
-      max_output_tokens: 8192
+      temperature: 0.0          # Deterministic - maximale Präzision für Symbolerkennung (reduced from 0.1)
+      top_p: 0.1                # Very deterministic - schmale Verteilung (reduced from 0.95)
+      top_k: 1                  # Most deterministic - nur Top-Token (reduced from 40)
+      max_output_tokens: 8192   # Standard-Limit für Gemini 1.5 Modelle
+      candidate_count: 1        # Single response für Geschwindigkeit
+      response_mime_type: "application/json"  # Erzwingt strukturierte JSON-Ausgabe
   "MultiModal Embedding (Image)":
       # Dies ist das dedizierte MultiModal Embedding Model von Vertex AI.
       # Es hat KEINE "generation_config" im klassischen Sinne, da es Embeddings und nicht Text generiert.
@@ -133,21 +149,110 @@ models:
 
   # Definition verschiedener Analyse-Strategien für den CLI-Runner (Möglichkeit für Mischstrategien mit verschiedenen Modellen)
 strategies:
-  default_flash:
-    meta_model: "Google Gemini 2.5 Flash"
+  # STRATEGY 1: Vollständig Flash - schnell und kosteneffizient
+  all_flash:
+    swarm_model: "Google Gemini 2.5 Flash"
+    monolith_model: "Google Gemini 2.5 Pro"  # CRITICAL: Always Pro for Monolith
     detail_model: "Google Gemini 2.5 Flash"
     polyline_model: "Google Gemini 2.5 Flash"
+    correction_model: "Google Gemini 2.5 Flash"
+    critic_model_name: "Google Gemini 2.5 Flash"
+    meta_model: "Google Gemini 2.5 Flash"
+  
+  # STRATEGY 2: OPTIMAL - Swarm (Flash) für Geschwindigkeit, Monolith (Pro) für Genauigkeit
+  optimal_swarm_monolith:
+    swarm_model: "Google Gemini 2.5 Flash"
+    monolith_model: "Google Gemini 2.5 Pro"
+    detail_model: "Google Gemini 2.5 Flash"  # Fallback
+    polyline_model: "Google Gemini 2.5 Flash"
+    correction_model: "Google Gemini 2.5 Pro"
+    critic_model_name: "Google Gemini 2.5 Pro"
+    meta_model: "Google Gemini 2.5 Flash"
+  
+  # STRATEGY 3: ULTRA-FAST - Swarm (Flash-Lite Preview) für maximale Geschwindigkeit, Monolith (Pro) für Qualität
+  optimal_swarm_monolith_lite:
+    swarm_model: "Google Gemini 2.5 Flash-Lite (Preview)"  # Fastest for swarm (many tiles)
+    monolith_model: "Google Gemini 2.5 Pro"  # CRITICAL: Always Pro for Monolith (better quality)
+    detail_model: "Google Gemini 2.5 Flash"  # Fallback
+    polyline_model: "Google Gemini 2.5 Flash"
+    correction_model: "Google Gemini 2.5 Flash"
+    critic_model_name: "Google Gemini 2.5 Flash"
+    meta_model: "Google Gemini 2.5 Flash"
+  
+  # STRATEGY 4: SIMPLE PID - Optimiert für Simple P&IDs (schnell + guter Qualitäts-Durchschnitt)
+  # Adaptive Strategie (Pro/Lite): Monolith (Pro) für Genauigkeit, Swarm (Flash-Lite Preview) als Spezialist für fehlende Elemente
+  simple_pid_strategy:
+    swarm_model: "Google Gemini 2.5 Flash-Lite (Preview)"  # Spezialist für SamplePoint & ISA-Supply
+    monolith_model: "Google Gemini 2.5 Pro"  # Upgraded to Pro for better precision
+    detail_model: "Google Gemini 2.5 Pro"  # Upgraded to Pro for better precision
+    polyline_model: "Google Gemini 2.5 Flash"
+    correction_model: "Google Gemini 2.5 Pro"  # Upgraded to Pro for better reasoning
+    critic_model_name: "Google Gemini 2.5 Pro"  # Upgraded to Pro for better critique (Multi-Model Critic)
+    meta_model: "Google Gemini 2.5 Flash"
+  
+  # LEGACY: Default Flash (backward compatibility)
+  default_flash:
+    swarm_model: "Google Gemini 2.5 Flash"
+    monolith_model: "Google Gemini 2.5 Pro"  # CRITICAL: Always Pro for Monolith
+    detail_model: "Google Gemini 2.5 Flash"
+    polyline_model: "Google Gemini 2.5 Flash"
+    correction_model: "Google Gemini 2.5 Flash"
+    critic_model_name: "Google Gemini 2.5 Flash"
+    meta_model: "Google Gemini 2.5 Flash"
 
 logic_parameters:
+  # Phase 0: Complexity Analysis (REACTIVATED - CV-based fast analysis)
+  use_phase0: true  # Enable CV-based complexity analysis for automatic strategy selection
+  # use_phase0_llm: false  # LLM not used - CV-only multi-metric analysis
+  
+  # ----------------------------------------------------
+  # Phase 2: Analysis Strategy
+  # ----------------------------------------------------
+  # CRITICAL FIX 1.3: Swarm re-activated for simple_pid_strategy (to find SamplePoint-S & ISA-Supply)
+  use_swarm_analysis: true  # Swarm as specialist for missing elements
+  use_monolith_analysis: true  # Monolith as baseline (84% baseline)
+  use_fusion: true  # Fusion with Monolith prioritization
+  
   # ----------------------------------------------------
   # Globale Steuerung & Worker
   # ----------------------------------------------------
   # Maximale Anzahl der Korrektur-Iterationen in der Feedback-Schleife
-  max_self_correction_iterations: 3
+  max_self_correction_iterations: 5
   # Score (0-100), bei dem die Korrekturschleife vorzeitig abbricht
-  target_quality_score: 98.0
-  # Maximale Anzahl paralleler Worker für die Analyse-Aufrufe (höher = schneller, aber mehr API-Last)
-  llm_executor_workers: 12
+  target_quality_score: 95.0  # Increased from 85.0 to 95.0 for "Top-Niveau" goal (ensures Phase 3 actually corrects errors)
+  # Maximale Anzahl Iterationen ohne signifikante Verbesserung (Plateau-Erkennung)
+  max_no_improvement_iterations: 3
+  # Mindestverbesserung pro Iteration (in Punkten) um als "Verbesserung" zu zählen
+  min_improvement_threshold: 0.5
+  # Stoppe bei Plateau (keine Verbesserung mehr)
+  early_stop_on_plateau: true
+  
+  # ----------------------------------------------------
+  # Simple P&ID Mode: Optimiert für einfache P&IDs (≤15 Elemente)
+  # ----------------------------------------------------
+  simple_pid_mode: false  # Automatisch aktiviert wenn ≤15 Elemente erkannt
+  # Wenn simple_pid_mode aktiv: max_iterations = 2, early_stop_threshold = 70-80%
+  # CRITICAL FIX: Erzwinge mindestens 2 Durchläufe auch bei einfachen P&IDs
+  simple_pid_max_iterations: 2  # Minimum 2 iterations for simple P&IDs
+  simple_pid_early_stop_threshold: 85.0  # Increased from 70.0 to ensure at least 2 iterations run
+  # Deaktiviere WHOLE-IMAGE re-analysis Fallback für einfache P&IDs
+  simple_pid_disable_whole_image_fallback: true
+  # Stop Phase 3 wenn < 5 uncertain zones (für einfache P&IDs)
+  simple_pid_min_uncertain_zones: 5
+  
+  # PHASE 5.4: Maximale Anzahl paralleler Worker für die Analyse-Aufrufe (max 8-10 für API-Limits)
+  # Increased from 4 to 6 for faster processing (Uni-Bilder optimization)
+  llm_executor_workers: 6
+  
+  # ----------------------------------------------------
+  # Phase 1: BBox Validierung & Verfeinerung
+  # ----------------------------------------------------
+  # Anzahl Erkennungsversuche für Legende/Metadata BBox
+  bbox_validation_attempts: 3
+  # Maximaler ausgeschlossener Bereich (als Anteil der Bildfläche, 0.0-1.0)
+  max_excluded_area_percentage: 0.5
+  # BBox-Verfeinerung aktivieren (Verkleinern wenn zu groß)
+  bbox_refinement_enabled: true
 
   # ----------------------------------------------------
   # LLM Handler / Caching / Timeouts
@@ -160,32 +265,124 @@ logic_parameters:
   llm_disk_cache_size_gb: 2
   # Anzahl der Einträge im Memory-Cache (Level 1, LRU)
   llm_memory_cache_size: 100
+  
+  # ----------------------------------------------------
+  # LLM Logging Configuration
+  # ----------------------------------------------------
+  # Erweiterte Logging-Funktionalität für LLM-Calls
+  llm_logging_enabled: true          # Enable detailed LLM logging
+  llm_log_level: "DEBUG"              # Log level for LLM calls (DEBUG, INFO, WARNING, ERROR)
+  llm_log_full_responses: true       # Log full responses (not just previews)
+  llm_log_save_prompts: true          # Save full prompts to separate files
+  llm_log_save_responses: true        # Save full responses to separate files
+  llm_log_max_response_length: 10000  # Max length to log in main log (full saved to file)
 
   # ----------------------------------------------------
   # Phase 2: Schwarm & Monolith Analyse
   # ----------------------------------------------------
+  # Aktivierung der einzelnen Analyse-Phasen
+  use_swarm_analysis: true          # Swarm-Analyse aktivieren/deaktivieren
+  use_monolith_analysis: true       # Monolith-Analyse aktivieren/deaktivieren
+  use_fusion: true                  # Fusion von Swarm + Monolith aktivieren/deaktivieren
   # Ziel-Anzahl der Kacheln für die adaptive Segmentierung des Schwarms
   adaptive_target_tile_count: 50
   # Harte Obergrenze für die Anzahl der zu analysierenden Kacheln
   max_total_tiles: 80
   # Batch-Größe für die parallele Verarbeitung der Kacheln (wie viele auf einmal in den ThreadPool)
   analysis_batch_size: 5
+  
+  # ----------------------------------------------------
+  # Two-Pass Pipeline (Coarse → Refine)
+  # ----------------------------------------------------
+  # PHASE 5.1: Aktiviert Two-Pass Pipeline für große Bilder (>4000px)
+  # Enable for Uni-Bilder (large complex diagrams)
+  two_pass_enabled: true
+  # Kachelgröße für Pass 1 (Coarse)
+  coarse_tile_size: 1024
+  # Overlap für Pass 1 (Coarse) als Verhältnis (0.33 = 33%)
+  coarse_overlap: 0.33
+  # Kachelgröße für Pass 2 (Refine)
+  refine_tile_size: 512
+  # Overlap für Pass 2 (Refine) als Verhältnis (0.5 = 50%)
+  refine_overlap: 0.5
+  # Maximale Anzahl Refine-Kacheln (Budget)
+  max_refine_tiles: 80
+  # Confidence-Schwelle für unsichere Zonen
+  low_confidence_threshold: 0.7
+
+  # ----------------------------------------------------
+  # Line Extraction
+  # ----------------------------------------------------
+  # Use skeleton-based line extraction instead of LLM-based
+  use_skeleton_line_extraction: false
+
+  # ----------------------------------------------------
+  # Critics
+  # ----------------------------------------------------
+  # Enable Topology Critic validation
+  use_topology_critic: true
+  # Enable Legend Consistency Critic validation
+  use_legend_consistency_critic: true
 
   # ----------------------------------------------------
   # Phase 2: Fusion & Lückenschließung
   # ----------------------------------------------------
   # Schwellenwert für die Überlappung (IoU), um zwei Elemente als identisch zu betrachten
-  iou_match_threshold: 0.1
+  iou_match_threshold: 0.3  # Erhöht von 0.1 auf 0.3 für sicherere Fusion (siehe FusionEngine)
   # Distanzschwelle (als Anteil der Bilddiagonale) für die prädiktive Lückenschließung
-  graph_completion_distance_threshold: 0.05
+  # CRITICAL FIX 2.1: Erhöht von 0.05 auf 0.08 für bessere Lückenschließung
+  graph_completion_distance_threshold: 0.08
+  # Predictive Completion aktivieren/deaktivieren
+  use_predictive_completion: false  # DEAKTIVIERT für ersten Testlauf (Kern-System: Phase 0, 1, 2a, 2b, 2c-Fusion, 4)
+
+  # ----------------------------------------------------
+  # Phase 2e: Line Extractor - Gap Bridging
+  # ----------------------------------------------------
+  # Gap Bridging Threshold (in pixels) für die Verbindung von Liniensegmenten
+  # Dieser Wert ist der "Stellhebel" für die Gap-Bridging-Logik
+  # - Niedrigere Werte (z.B. 20): Strengere Verbindung (weniger falsche Verbindungen)
+  # - Höhere Werte (z.B. 50): Tolerantere Verbindung (mehr Verbindungen, aber möglicherweise falsche)
+  # Wenn nicht gesetzt, wird ein adaptiver Wert basierend auf der Bildgröße verwendet
+  gap_bridging_threshold_px: 20  # Reduziert von 50 auf 20 für strengere Verbindung
+
+  # ----------------------------------------------------
+  # Phase 2e: Polyline Refinement
+  # ----------------------------------------------------
+  # Polyline Refinement aktivieren/deaktivieren
+  use_polyline_refinement: false    # DEAKTIVIERT für ersten Testlauf (Kern-System: Phase 0, 1, 2a, 2b, 2c-Fusion, 4)
 
   # ----------------------------------------------------
   # Phase 4: Post-Processing & Filterung
   # ----------------------------------------------------
+  # Post-Processing aktivieren/deaktivieren
+  use_post_processing: true         # Post-Processing (KPIs, CGM, artifacts) aktivieren/deaktivieren
+  # Self-Correction Loop aktivieren/deaktivieren
+  use_self_correction_loop: false   # DEAKTIVIERT für ersten Testlauf (Kern-System: Phase 0, 1, 2a, 2b, 2c-Fusion, 4)
+  # Active Learning aktivieren/deaktivieren
+  use_active_learning: false        # Active Learning aktivieren/deaktivieren (WICHTIG: Während Tests deaktivieren, um schlechte Korrekturen nicht zu lernen)
+  # Type-Validierung aktivieren/deaktivieren
+  use_type_validation: true         # Type-Validierung aktivieren/deaktivieren
+  # Confidence-Filterung aktivieren/deaktivieren
+  use_confidence_filtering: true   # Confidence-Filterung aktivieren/deaktivieren (Zwei-Stufen)
   # Confidence-Schwellenwert für Element- und Verbindungs-Filterung (0.0 - 1.0)
   # Höher = weniger Halluzinationen, aber mehr verpasste Elemente
-  # Empfohlen: 0.85 für hohe Precision, 0.7 für Balance
-  confidence_threshold: 0.85
+  # VERBESSERT: Zwei-Stufen-Filterung (siehe pipeline_coordinator.py)
+  # - confidence >= 0.5: Behalten (auch als "Unknown")
+  # - confidence 0.3-0.5: Behalten mit Penalty
+  # - confidence < 0.3: Nur entfernen bei sehr niedriger Confidence
+  confidence_threshold: 0.5  # Gesenkt von 0.6 auf 0.5 für bessere Datenintegrität
+  
+  # CV/OCR-based enhancements
+  use_cv_bbox_refinement: true      # Refine bounding boxes with CV anchor method (centers symbols)
+  use_cv_text_detection: true       # Detect text regions in tiles for label hints
+  use_legend_matching: true         # Match legend symbols with diagram symbols using visual similarity
+  
+  # LLM-based improvements (SOFORTIGE, MITTELFRISTIGE, LANGFRISTIGE)
+  use_llm_id_correction: true       # LLM-basierte ID-Korrektur und Alias-Auflösung
+  use_context_type_inference: true  # Context-Aware Type-Inferenz (P&ID Naming Conventions)
+  use_cot_reasoning: true           # Chain-of-Thought Reasoning für Verbindungen
+  use_error_explanation: true      # Error Explanation durch LLM (Meta-Kritiker)
+  use_multi_step_topology: true     # Multi-Step Reasoning für Topologie-Validierung
 
   # ----------------------------------------------------
   # Phase 4: CGM-Erstellung & Plots
@@ -357,14 +554,91 @@ prompts:
     ```
 
   legend_extraction_user_prompt: |
-    **TASK:** Extract ALL information from the LEGEND AREA, which is enclosed by a distinct black rectangle.
-    **OUTPUT:** A single, valid JSON object.
-    **STRATEGY:**
-    1.  **Locate Box:** Find the distinct black rectangle enclosing the legend. Its coordinates are `"legend_bbox"`. Be precise.
-    2.  **Analyze Content Inside:** Analyze ONLY the content within this box to extract the `"symbol_map"` and `"line_map"`.
+    **TASK:** You will receive a CROPPED image showing ONLY the P&ID Legend.
+    Analyze it and extract ALL symbol and line definitions.
+    **OUTPUT:** A single, valid JSON object with "symbol_map" and "line_map".
+    
+    **STRATEGIE (WIE EIN MENSCH):**
+    1.  **Symbol Map:** Scanne die Legende. Finde ein Symbol-Bild (die Grafik) und lies den Text daneben (z.B. "Pumpe", "Ventil", "V-01").
+        - Erstelle ein Mapping: `symbol_map: { "Gelesener Text": "Standard-Typ" }`
+        - Beispiel: Wenn du "Pumpe P-01" liest, erstelle: `"Pumpe P-01": "Pump"`
+        - Beispiel: Wenn du "Dreiwegeventil" liest, erstelle: `"Dreiwegeventil": "Valve"`
+    2.  **Line Map:** Scanne nach Linien-Definitionen (z.B. "Rote Linie", "Gestrichelt").
+        - Erfasse die **semantische Bedeutung** (z.B. "Heißwasser", "Luft") UND die **visuellen Eigenschaften** (Farbe, Stil).
+    
     **RULES:**
     - Provide ONLY the JSON object. NO additional text.
-    - Colors: "red", "blue", etc. Styles: "solid", "dashed", "dotted".
+    - Use standard P&ID types ("Pump", "Valve", "Tank", "Source", "Sink", "Mixer", "Heat Exchanger", "Volume Flow Sensor").
+    - Für Linien, nutze Stile: "solid", "dashed", "dotted".
+    
+    **EXAMPLE OUTPUT (Folge diesem Format exakt):**
+    ```json
+    {
+      "symbol_map": {
+        "Pumpe P-01": "Pump",
+        "P-02": "Pump",
+        "Ventil V-01": "Valve",
+        "Mischer M-01": "Mixer"
+      },
+      "line_map": {
+        "Heißwasser (VL)": {
+          "semantic_meaning": "Heißwasser Vorlauf",
+          "visual_properties": {
+            "color": "red",
+            "style": "solid"
+          }
+        },
+        "Kaltwasser (RL)": {
+          "semantic_meaning": "Kaltwasser Rücklauf",
+          "visual_properties": {
+            "color": "blue",
+            "style": "solid"
+          }
+        },
+        "Luftabgänge": {
+          "semantic_meaning": "Luft",
+          "visual_properties": {
+            "color": "black",
+            "style": "dashed"
+          }
+        }
+      }
+    }
+    ```
+  
+  legend_text_to_structure_prompt: |
+    You are a P&ID legend parser. Extract symbol types and line styles from the following legend text.
+    
+    The text is from a P&ID diagram legend (extracted via OCR). Extract:
+    1. Symbol mappings (symbol_key -> symbol_type)
+    2. Line mappings (line_key -> {color, style})
+    
+    **CRITICAL:**
+    - Use EXACT type names from ISO/DIN standards (e.g., "Valve", "Pump", "Volume Flow Sensor")
+    - DO NOT invent new types - use standard P&ID types
+    - If uncertain, use the most common standard type
+    
+    **OUTPUT FORMAT:**
+    Return a valid JSON object with:
+    - symbol_map: {symbol_key: symbol_type}
+    - line_map: {line_key: {color: "color_name", style: "solid|dashed|dotted"}}
+    
+    **EXAMPLE:**
+    Input text: "Valve - V | Pump - P | Flow Meter - FT"
+    Output:
+    {
+      "symbol_map": {
+        "V": "Valve",
+        "P": "Pump",
+        "FT": "Volume Flow Sensor"
+      },
+      "line_map": {}
+    }
+    
+    Legend text:
+    {raw_text}
+    
+    Return ONLY valid JSON, no additional text.
     **EXAMPLE:**
     ```json
     {
@@ -383,7 +657,24 @@ prompts:
 
   raster_analysis_user_prompt_template: |-
     **ROLE:** You are a P&ID analysis engine with high precision requirements.
-    **TASK:** Analyze the provided image segment and identify all components and their direct connections.
+    **TASK:** Analyze the provided image segment and identify ALL components (symbols and text labels).
+    
+    **CRITICAL:** Your ONLY task is to find ELEMENTS. IGNORE all connections (lines/pipes).
+    
+    **CRITICAL: STRICT TYPE CONSTRAINTS (STRICTLY ENFORCE):**
+    1. You MUST use EXACT types from this list: {known_types_json}
+    2. Type names are CASE-SENSITIVE: "Valve" NOT "valve", "Pump" NOT "pump"
+    3. If you see a valve symbol, use "Valve" (capitalized, exact spelling)
+    4. If you see a pump symbol, use "Pump" (capitalized, exact spelling)
+    5. If you see a flow sensor, use "Volume Flow Sensor" (exact phrase, case-sensitive)
+    6. If you see a mixer, use "Mixer" (capitalized, exact spelling)
+    7. If you see a source, use "Source" (capitalized, exact spelling)
+    8. If you see a sink, use "Sink" (capitalized, exact spelling)
+    9. If you see a sample point, use "Sample Point" (exact phrase, case-sensitive)
+    10. DO NOT invent new types - ONLY use types from the list
+    11. DO NOT use lowercase or variations - use EXACT type names
+    12. DO NOT use synonyms - use EXACT type names from the list
+    
     **CRITICAL ANTI-HALLUCINATION RULES (STRICTLY ENFORCE):**
     - ONLY identify elements that are CLEARLY VISIBLE and have STRONG visual evidence in the image
     - If you are uncertain about an element (even slightly), DO NOT include it - ERR on the side of caution
@@ -391,25 +682,121 @@ prompts:
     - DO NOT guess element types or labels - if unclear, exclude the element
     - When in doubt, leave it out - PRECISION IS MORE IMPORTANT THAN RECALL
     - Verify each element has BOTH: clear visual symbol pattern AND readable label/text
-    - Only include elements where you are >90% confident - when uncertain, exclude
+    - Only include elements where you are >30% confident - when uncertain, exclude
     - DO NOT include elements based on expected patterns - only actual visual evidence counts
+    
+    **FEW-SHOT EXAMPLES (FOLLOW EXACTLY - THESE ARE CRITICAL FOR CORRECT TYPE RECOGNITION):**
+    
+    Example 1: Valve (MOST COMMON)
+    - Visual: Circle with diagonal line through it, or control valve symbol (circle with line and arrow)
+    - Label: "Fv-3-3040" or "Fv-3-3041" or "V-101" or "CV-42"
+    - Type: "Valve" (EXACT spelling, capitalized)
+    - WRONG: "valve", "control valve", "Control Valve", "Valves", "valves", "ControlValve", "control_valve"
+    - CORRECT: "Valve" (only this exact string)
+    {viewshot_valve_examples}
+    
+    Example 2: Flow Sensor (COMMON)
+    - Visual: Diamond shape with text inside, or flow meter symbol (diamond with arrow)
+    - Label: "FT-10" or "FT-11" or "F-201" or "FM-05"
+    - Type: "Volume Flow Sensor" (EXACT phrase, case-sensitive, with space)
+    - WRONG: "Sensor", "flow meter", "Flow Meter", "Flow Sensor", "sensor", "FlowSensor", "volume_flow_sensor"
+    - CORRECT: "Volume Flow Sensor" (exact phrase with space, capitalized)
+    {viewshot_flow_sensor_examples}
+    
+    Example 3: Mixer (COMMON)
+    - Visual: Mixing symbol (circle with multiple lines or blending symbol)
+    - Label: "M-08" or "MX-101" or "Mixer-5"
+    - Type: "Mixer" (EXACT spelling, capitalized)
+    - WRONG: "machine", "mixer", "Machine", "Blender", "blender", "MixingMachine", "mixing_machine"
+    - CORRECT: "Mixer" (only this exact string)
+    {viewshot_mixer_examples}
+    
+    Example 4: Source (COMMON)
+    - Visual: Source symbol (circle with arrow pointing out) or pump symbol with label starting with "P-"
+    - Label: "P-201" or "P-504" or "S-101" or "Source-1"
+    - Type: "Source" (EXACT spelling, capitalized)
+    - WRONG: "source", "pump", "Pump", "Inlet", "inlet", "SourcePump", "source_pump"
+    - CORRECT: "Source" (only this exact string)
+    {viewshot_source_examples}
+    
+    Example 5: Sample Point (COMMON)
+    - Visual: Sample point symbol (small circle with line or dot)
+    - Label: "S" or "SamplePoint-S" or "SP-101" or "Sample-1"
+    - Type: "Sample Point" (EXACT phrase, case-sensitive, with space)
+    - WRONG: "sample point", "SamplePoint", "Sampling Point", "sample_point", "Sample", "sample"
+    - CORRECT: "Sample Point" (exact phrase with space, capitalized)
+    {viewshot_sample_point_examples}
+    
+    Example 6: Pump (COMMON)
+    - Visual: Pump symbol (circle with arrow or pump icon)
+    - Label: "P-101" or "Pump-1" or "PUMP-201"
+    - Type: "Pump" (EXACT spelling, capitalized)
+    - WRONG: "pump", "PUMPS", "pumps", "PumpMachine", "pump_machine"
+    - CORRECT: "Pump" (only this exact string)
+    {viewshot_pump_examples}
+    
+    Example 7: Sink (COMMON)
+    - Visual: Sink symbol (circle with arrow pointing in or drain symbol)
+    - Label: "Sink-1" or "D-101" or "Drain-5"
+    - Type: "Sink" (EXACT spelling, capitalized)
+    - WRONG: "sink", "SINKS", "sinks", "Drain", "drain", "SinkDrain", "sink_drain"
+    - CORRECT: "Sink" (only this exact string)
+    {viewshot_sink_examples}
+    
+    **VIEWSHOT EXAMPLES (VISUAL REFERENCE FROM REAL UNI-BILDER):**
+    {viewshot_section}
+    
+    **CRITICAL REMINDERS:**
+    - Type names are CASE-SENSITIVE: "Valve" != "valve"
+    - Type names with spaces must have EXACT spacing: "Sample Point" != "SamplePoint" != "Sample Point"
+    - DO NOT use lowercase, synonyms, or variations - ONLY use exact type names from the list
+    - When in doubt, check the exact type name from the list above
+    
+    **CRITICAL: ID vs. LABEL RULES (STRICTLY ENFORCE):**
+    1. **"id" FIELD:** MUST be the P&ID Tag Name ONLY. It must be short, alphanumeric, and contain hyphens (e.g., 'P-201', 'Fv-3-3040', 'M-08', 'ISA').
+    2. **"label" FIELD:** MUST be the FULL descriptive text found near the symbol (e.g., 'From Transfer Pump P-201', 'Mixer M-08', '(Instrument Air Supply)').
+    3. If Tag Name and Label are identical (e.g., only "M-08" is visible), use it for BOTH fields.
+    
+    **EXAMPLE 1 (Long Label):**
+    - Visual Text: "From Transfer Pump P-201"
+    - Output `id`: "P-201"
+    - Output `label`: "From Transfer Pump P-201"
+    
+    **EXAMPLE 2 (Short Label):**
+    - Visual Text: "M-08"
+    - Output `id`: "M-08"
+    - Output `label`: "M-08"
+    
+    **CRITICAL: BOUNDING BOX (BBox) RULES (STRICTLY ENFORCE):**
+    - The "bbox" MUST be a TIGHT box around the GRAPHICAL SYMBOL ONLY.
+    - The "bbox" MUST NOT include the 'id' or 'label' text sitting next to it.
+    - Make the "bbox" as small as possible while still enclosing the entire symbol.
+    
     **OUTPUT FORMAT:** Your entire response MUST be a single, valid JSON object with "elements" and "connections" keys.
+    
+    **CRITICAL: CONFIDENCE SCORES (MANDATORY):**
+    - EVERY element MUST have a "confidence" field (float, 0.0-1.0)
+    - EVERY connection MUST have a "confidence" field (float, 0.0-1.0)
+    - Confidence represents your certainty: 1.0 = absolutely certain, 0.0 = completely uncertain
+    - Be honest: If you're unsure, use lower confidence (e.g., 0.6-0.7)
+    - If you're very certain, use higher confidence (e.g., 0.9-1.0)
+    - DO NOT omit confidence scores - they are MANDATORY for every element and connection
     
     **1. "elements" List:**
     - Find ONLY components that are CLEARLY VISIBLE with strong visual evidence
-    - REQUIRED KEYS: `"id"` (the text label, e.g., "P-101"), `"type"`, `"label"`, and a tight `"bbox"`.
+    - REQUIRED KEYS: `"id"` (P&ID Tag Name, e.g., "P-201"), `"type"` (EXACT type from list), `"label"` (full descriptive text), and a tight `"bbox"` (symbol only, no text).
+    - **`"confidence"`**: (float, 0.0-1.0) Your confidence that this element is correct (0.9+ = Very Sure, < 0.5 = Guessing).
+    - Use EXACT type names from the list above - CASE-SENSITIVE
     - Only include 'Line_Split' and 'Line_Merge' if they are CLEARLY VISIBLE and have visual evidence
     - If an element's label or type is ambiguous, DO NOT include it
 
     **2. "connections" List:**
-    - Find ONLY direct connections between components that you have CLEARLY identified
-    - REQUIRED KEYS: `"from_id"`, `"to_id"`.
-    - Only connect elements that are in your "elements" list
-    - DO NOT invent connections - only include connections with clear visual evidence (visible lines)
-    - DO NOT invent ports or trace polylines. This will be handled by a later process.
-    - When uncertain about a connection, leave it out
+    - CRITICAL: Provide an EMPTY list. You MUST NOT detect connections.
+    - ` "connections": [] `
+    - **NOTE:** If you are instructed to detect connections, REQUIRED KEYS are `"from_id"`, `"to_id"`, `"from_port_id"`, `"to_port_id"`.
+    - **`"confidence"`**: (float, 0.0-1.0) Your confidence that this connection is correct (0.9+ = Very Sure, < 0.5 = Guessing).
 
-    **KNOWLEDGE BASE (Use these types):**
+    **KNOWLEDGE BASE (Use these EXACT types - CASE-SENSITIVE):**
     {known_types_json}
 
     {legend_context}
@@ -417,83 +804,109 @@ prompts:
     **CORRECTION FEEDBACK (Fix these errors from the last run):**
     {error_feedback}
     
-    **EXAMPLE STRUCTURE (FOLLOW EXACTLY):**
+    **EXAMPLE STRUCTURE (FOLLOW EXACTLY - NOTE EXACT TYPE NAMES AND CONFIDENCE):**
     ```json
     {
       "elements": [
         {
-          "id": "Pump-101", "label": "Main Pump P-101", "type": "Pump",
-          "bbox": {"x": 0.1, "y": 0.2, "width": 0.05, "height": 0.04}
+          "id": "P-101", "label": "Main Pump P-101", "type": "Pump",
+          "bbox": {"x": 0.1, "y": 0.2, "width": 0.05, "height": 0.04},
+          "confidence": 0.95
         },
         {
-          "id": "Valve-A", "label": "Isolation Valve", "type": "Valve",
-          "bbox": {"x": 0.3, "y": 0.4, "width": 0.02, "height": 0.03}
+          "id": "Fv-3-3040", "label": "Control Valve Fv-3-3040", "type": "Valve",
+          "bbox": {"x": 0.3, "y": 0.4, "width": 0.02, "height": 0.03},
+          "confidence": 0.90
         }
       ],
-      "connections": [
-        {
-          "from_id": "Pump-101",
-          "to_id": "Valve-A"
-        }
-      ]
+      "connections": []
     }
     ```
+    
+    **CRITICAL:** Every element MUST include "confidence" (0.0-1.0). This is MANDATORY.
     
   monolithic_analysis_prompt_template: |-
-    # This prompt is identical to the raster_analysis prompt for consistency.
-    **ROLE:** You are a P&ID analysis engine with high precision requirements.
-    **TASK:** Analyze the provided image segment and identify all components and their direct connections.
-    **CRITICAL ANTI-HALLUCINATION RULES (STRICTLY ENFORCE):**
-    - ONLY identify elements that are CLEARLY VISIBLE and have STRONG visual evidence in the image
-    - If you are uncertain about an element (even slightly), DO NOT include it - ERR on the side of caution
-    - DO NOT invent elements that are not in the image - this is a critical error
-    - DO NOT guess element types or labels - if unclear, exclude the element
-    - When in doubt, leave it out - PRECISION IS MORE IMPORTANT THAN RECALL
-    - Verify each element has BOTH: clear visual symbol pattern AND readable label/text
-    - Only include elements where you are >90% confident - when uncertain, exclude
-    - DO NOT include elements based on expected patterns - only actual visual evidence counts
-    **OUTPUT FORMAT:** Your entire response MUST be a single, valid JSON object with "elements" and "connections" keys.
+    **ROLE:** You are a P&ID Topology Specialist.
+    **TASK:** Your ONLY task is to find ALL connections (lines/pipes) between the elements provided in the knowledge base.
+    
+    **CRITICAL KNOWLEDGE BASE (INPUT):**
+    Here is a complete JSON list of all known elements on the diagram. You MUST use their exact IDs.
+    `{element_list_json}`
+    
+    **CRITICAL RULES (STRICTLY ENFORCE):**
+    1. **ONLY DETECT CONNECTIONS.** Do NOT detect elements.
+    2. Use the EXACT element IDs from the knowledge base for `"from_id"` and `"to_id"`.
+    3. Find ALL visible lines/pipes connecting these elements within the image.
+    4. DO NOT invent connections that are not visually present.
+    5. IGNORE connections to elements NOT in the provided list.
+    
+    {legend_context}
+    {error_feedback}
+    
+    **OUTPUT FORMAT:** Your entire response MUST be a single, valid JSON object.
     
     **1. "elements" List:**
-    - Find ONLY components that are CLEARLY VISIBLE with strong visual evidence
-    - REQUIRED KEYS: `"id"` (the text label, e.g., "P-101"), `"type"`, `"label"`, and a tight `"bbox"`.
-    - If an element's label or type is ambiguous, DO NOT include it
-
+    - CRITICAL: Provide an EMPTY list. You MUST NOT detect elements.
+    - ` "elements": [] `
+    - **NOTE:** If the prompt is modified to allow additional element detection (e.g., in simple P&ID mode or when legend symbols are missing), then:
+      - REQUIRED KEYS: `"id"`, `"type"`, `"label"`, `"bbox"`, `"confidence"`.
+      - **`"confidence"`:** (float, 0.0-1.0) Your certainty that this element is correctly identified. 0.9+ = Very certain, < 0.5 = Guessed.
+    
     **2. "connections" List:**
-    - Find ONLY direct connections between components that you have CLEARLY identified
-    - REQUIRED KEYS: `"from_id"`, `"to_id"`.
-    - Only connect elements that are in your "elements" list
-    - DO NOT invent connections - only include connections with clear visual evidence (visible lines)
-    - DO NOT invent ports or trace polylines.
-    - When uncertain about a connection, leave it out
-
-    **KNOWLEDGE BASE:** [{component_list_str}]
-
-    {legend_context}
-
-    **CORRECTION FEEDBACK:** {error_feedback}
-      
+    - Find ALL connections (lines/pipes) between the elements in the knowledge base.
+    - REQUIRED KEYS: `"from_id"`, `"to_id"`, `"from_port_id"`, `"to_port_id"`.
+    - **`"confidence"`**: (float, 0.0-1.0) Your confidence that this connection is correct (0.9+ = Very Sure, < 0.5 = Guessing).
+    
+    **CRITICAL: CONFIDENCE SCORES (MANDATORY):**
+    - EVERY connection MUST have a "confidence" field (float, 0.0-1.0)
+    - EVERY element (if detected) MUST have a "confidence" field (float, 0.0-1.0)
+    - Confidence represents your certainty: 1.0 = absolutely certain, 0.0 = completely uncertain
+    - Be honest: If the element/connection is clear and visible, use high confidence (0.9-1.0)
+    - If the element/connection is partially obscured or unclear, use lower confidence (0.6-0.8)
+    - DO NOT omit confidence scores - they are MANDATORY for every element and connection
+    
     **EXAMPLE STRUCTURE (FOLLOW EXACTLY):**
     ```json
     {
-      "elements": [
-        {
-          "id": "Pump-101", "label": "Main Pump P-101", "type": "Pump",
-          "bbox": {"x": 0.1, "y": 0.2, "width": 0.05, "height": 0.04}
-        },
-        {
-          "id": "Valve-A", "label": "Isolation Valve", "type": "Valve",
-          "bbox": {"x": 0.3, "y": 0.4, "width": 0.02, "height": 0.03}
-        }
-      ],
+      "elements": [],
       "connections": [
         {
-          "from_id": "Pump-101",
-          "to_id": "Valve-A"
+          "from_id": "P-101",
+          "to_id": "Fv-3-3040",
+          "confidence": 0.95
+        },
+        {
+          "from_id": "Fv-3-3040",
+          "to_id": "M-08",
+          "confidence": 0.90
         }
       ]
     }
     ```
+    
+    **NOTE:** If elements are detected (e.g., in simple P&ID mode), the structure would be:
+    ```json
+    {
+      "elements": [
+        {
+          "id": "P-101",
+          "type": "Pump",
+          "label": "Main Pump P-101",
+          "bbox": {"x": 0.1, "y": 0.2, "width": 0.05, "height": 0.04},
+          "confidence": 0.95
+        }
+      ],
+      "connections": [
+        {
+          "from_id": "P-101",
+          "to_id": "Fv-3-3040",
+          "confidence": 0.90
+        }
+      ]
+    }
+    ```
+    
+    **CRITICAL:** Every connection MUST include "confidence" (0.0-1.0). Every element (if detected) MUST include "confidence" (0.0-1.0). This is MANDATORY.
 
   polyline_extraction_user_prompt: |
     **ROLE:** You are a vectorization engine.
@@ -503,43 +916,123 @@ prompts:
     - Each object MUST contain `"polyline"`, a list of `[x, y]` coordinate pairs (floats 0-1).
     - Provide ONLY the JSON object.
 
+  swarm_specialist_prompt_template: |
+    **ROLE:** You are a highly specialized P&ID analysis agent.
+    **TASK:** Analyze the provided image segment and identify ONLY the following specific components:
+    - "Sample Point" (e.g., labeled "S", "Sample Point", or a simple circle symbol)
+    - "Source" (e.g., labeled "ISA", "Air Supply", "Instrument Air Supply")
+
+    **CRITICAL: STRICT TYPE CONSTRAINTS (STRICTLY ENFORCE):**
+    1. You MUST use EXACT types from this list: ['SamplePoint', 'Source']
+    2. You MUST only identify elements that clearly match these types.
+    3. If an element does not clearly match 'SamplePoint' or 'Source', DO NOT include it.
+
+    **OUTPUT FORMAT:** Your entire response MUST be a single, valid JSON object with "elements" and "connections" keys.
+    (Connections are not expected for this specialist task, but the structure must be present).
+
+    **1. "elements" List:**
+    - Find ONLY components that are CLEARLY VISIBLE with strong visual evidence and match 'SamplePoint' or 'Source'.
+    - REQUIRED KEYS: `"id"` (the text label, e.g., "S", "ISA-Supply"), `"type"` (EXACT type from list), `"label"`, and a tight `"bbox"`.
+    - Assign a high confidence (e.g., 0.9) if you are certain.
+
+    **2. "connections" List:**
+    - This specialist is not focused on connections. Provide an empty list.
+
+    **EXAMPLE STRUCTURE (FOLLOW EXACTLY):**
+    ```json
+    {
+      "elements": [
+        {
+          "id": "S", "label": "Sample Point S", "type": "SamplePoint",
+          "bbox": {"x": 0.1, "y": 0.2, "width": 0.02, "height": 0.02}, "confidence": 0.9
+        },
+        {
+          "id": "ISA-Supply", "label": "Instrument Air Supply", "type": "Source",
+          "bbox": {"x": 0.8, "y": 0.1, "width": 0.05, "height": 0.03}, "confidence": 0.9
+        }
+      ],
+      "connections": []
+    }
+    ```
+
   metacritic_prompt_template: |
-    **ROLE:** You are a meticulous P&ID Quality Assurance Engineer and a Metacritic expert.
+    **ROLE:** You are a meticulous P&ID Quality Assurance Engineer and a Metacritic expert with expertise in validating technical diagram analyses.
     **TASK:** You will be provided with two analysis results for the same P&ID image:
-    1.  The "Monolithic Analysis" (a global, high-level understanding).
-    2.  The "Swarm Analysis" (a detailed, tile-based understanding).
+    1.  The "Monolithic Analysis" (a global, high-level understanding of the entire diagram).
+    2.  The "Swarm Analysis" (a detailed, tile-based understanding with high precision).
 
-    Your job is to identify high-level, logical, or systemic discrepancies between these two results. Focus on issues where one analysis sees something significant that the other completely misses or misinterprets, leading to a logical contradiction or gap in the overall understanding.
+    **YOUR MISSION:** Identify high-level, logical, or systemic discrepancies between these two results. Focus ONLY on significant issues where one analysis sees something important that the other completely misses or fundamentally misinterprets, leading to logical contradictions or critical gaps in understanding.
 
-    **WHAT TO LOOK FOR (Discrepancy IDs):**
-    - **Hallucinated_Elements**: Elements present in one analysis (e.g., Monolithic) that are completely absent or unidentifiable in the other (e.g., Swarm). This suggests a hallucination by the first analysis.
-    - **Missed_Connections**: Significant connections or relationships identified in one analysis (e.g., Monolithic) that are completely absent or fundamentally different in the other (e.g., Swarm), indicating a missed connection by the second.
-    - **Global_Inconsistency**: Broader logical contradictions or major structural differences between the two views (e.g., process flow, major component counts) that don't fall into the above categories.
+    **CRITICAL DISCREPANCY CRITERIA (STRICTLY ENFORCE):**
+
+    **1. Hallucinated_Elements**
+    - **Definition:** An element present in one analysis that is COMPLETELY ABSENT and UNIDENTIFIABLE in the other analysis (not just a position mismatch).
+    - **Evaluation Criteria (STRICTLY ENFORCE):**
+      * **CRITICAL - IoU-Based Evaluation:** Calculate the Intersection over Union (IoU) between the BBox in Analysis 1 and the nearest BBox in Analysis 2. If IoU < 0.3, it is likely a hallucination. IoU >= 0.3 means the elements overlap significantly and are likely the same element (even if BBox size differs).
+      * **Confidence Check:** If one analysis has confidence <0.5 AND the other has no element at all (IoU < 0.3), flag as potential hallucination.
+      * **Element Type and Label Verification:** If element types match but labels differ significantly, calculate IoU first. Only if IoU < 0.3, then verify if it's truly a different element (not just a labeling difference).
+      * **IGNORE - BBox Precision Differences:** A difference in BBox precision (smaller vs larger BBox) is NOT a hallucination - it's a refinement. Only flag if IoU < 0.3 AND element is completely absent.
+      * **IoU Calculation:** IoU = (Intersection Area) / (Union Area) of two bounding boxes. IoU ranges from 0 (no overlap) to 1 (perfect overlap).
+    - **Example (CORRECT):** "Monolithic analysis reports 'Pump P-101' at bbox(x:0.15, y:0.20, w:0.05, h:0.04) with confidence 0.9. Swarm analysis has nearest element at bbox(x:0.16, y:0.21, w:0.04, h:0.03). IoU = 0.25 (< 0.3 threshold). This suggests a hallucination by Monolithic analysis."
+    - **Example (INCORRECT - Do NOT flag):** "Monolithic has bbox(x:0.15, y:0.20, w:0.05, h:0.04), Swarm has bbox(x:0.16, y:0.21, w:0.04, h:0.03). IoU = 0.45 (>= 0.3). These are the SAME element with different BBox precision. NOT a hallucination."
+
+    **2. Missed_Connections**
+    - **Definition:** A connection identified in one analysis that is COMPLETELY MISSING in the other analysis, where BOTH source and target elements exist in both analyses.
+    - **Evaluation Criteria:**
+      * Verify that both 'from_id' and 'to_id' elements exist in BOTH analyses
+      * Check if the connection is critical (connects major components, not just line segments)
+      * Ignore minor connection differences (e.g., Line_Split vs Line_Merge variations)
+    - **Example:** "Swarm analysis shows connection from 'Pump P-001' to 'Valve V-002', both elements exist in Monolithic analysis with matching IDs, but Monolithic analysis has NO connection between them. This is a missed connection."
+
+    **3. Global_Inconsistency**
+    - **Definition:** Major structural or logical contradictions that don't fit the above categories but indicate fundamental differences in understanding.
+    - **Evaluation Criteria:**
+      * Component count discrepancies: >20% difference in total element count
+      * Process flow contradictions: Major differences in connection patterns
+      * Confidence score anomalies: Systematic differences in confidence distributions
+      * BBox precision issues: Systematic differences in bounding box sizes (if many elements have significantly larger BBoxes in one analysis, it may indicate lower precision)
+    - **Example:** "Monolithic analysis reports 8 pumps, Swarm analysis reports 3 pumps. This 62% discrepancy indicates a major inconsistency requiring reconciliation."
+
+    **CONFIDENCE & BBOX PRECISION EVALUATION (CRITICAL):**
+    - **ALWAYS calculate IoU first** before flagging any element as hallucinated
+    - **IoU >= 0.3:** Elements are likely the SAME element (even if BBox size/position differs slightly). Do NOT flag as hallucination.
+    - **IoU < 0.3:** Elements are likely DIFFERENT. Only then check if it's truly a hallucination (missing in one analysis).
+    - **BBox refinement (smaller/larger area):** This is EXPECTED and GOOD, not a discrepancy. IoU will still be high (>= 0.3) if it's the same element.
+    - **Confidence scores:** Elements with confidence <0.5 are less reliable, but still use IoU to verify if they're the same element.
+    - **Only flag as hallucination if:** IoU < 0.3 AND element is completely absent in the other analysis (not just refined).
 
     **INPUT CONTEXT:**
     - Monolithic Analysis Data: {monolith_json}
     - Swarm Analysis Data: {swarm_json}
 
-    **CRITICAL OUTPUT FORMAT:**
-    Provide your judgment in a JSON array format. Each object in the array should represent a single, high-level discrepancy.
+    **CRITICAL OUTPUT FORMAT (STRICTLY FOLLOW):**
+    You MUST provide a valid JSON object with EXACTLY this structure. Each discrepancy must have all three fields.
     ```json
     {{
       "discrepancies": [
         {{
           "id": "Hallucinated_Element",
-          "description": "The Monolithic analysis reported a 'Heat Exchanger HX-101' at coordinates (X, Y), but no such element or a similar one was found in the Swarm analysis.",
-          "suggested_correction_action": "Verify existence or remove element from monolithic result."
+          "description": "PRECISE description with element ID, type, coordinates, IoU value (if applicable), and why it's a hallucination. MUST include IoU calculation if comparing with element in other analysis.",
+          "suggested_correction_action": "Specific action to correct (e.g., 'Remove element P-101 from monolithic result' or 'Verify element HX-101 exists at coordinates (0.15, 0.20)')"
         }},
         {{
           "id": "Missed_Connection",
-          "description": "The Swarm analysis shows a pipe connecting 'Pump P-001' to 'Valve V-002', but the Monolithic analysis misses this critical connection.",
-          "suggested_correction_action": "Add missing relationship to monolithic result."
+          "description": "PRECISE description with connection details (from_id, to_id) and why it's missed",
+          "suggested_correction_action": "Specific action (e.g., 'Add connection from P-001 to V-002 to monolithic result')"
         }},
         {{
           "id": "Global_Inconsistency",
-          "description": "The Monolithic analysis reports 5 reactors, while the Swarm analysis only identifies 2, indicating a major discrepancy in component count.",
-          "suggested_correction_action": "Reconcile component counts by re-evaluating both analyses in the conflicting zones."
+          "description": "PRECISE description of the inconsistency with quantitative details (counts, percentages)",
+          "suggested_correction_action": "Specific reconciliation action"
         }}
       ]
     }}
     ```
+
+    **OUTPUT RULES:**
+    - Provide ONLY the JSON object, no additional text
+    - If no discrepancies found, return: {{"discrepancies": []}}
+    - Maximum 10 discrepancies per analysis (focus on most critical)
+    - **Be precise:** Include element IDs, coordinates, confidence scores, AND IoU values where relevant
+    - **For Hallucinated_Elements:** ALWAYS include IoU calculation in description (e.g., "IoU = 0.25 < 0.3 threshold, element absent in other analysis")
+    - Be actionable: suggested_correction_action must be specific and executable
