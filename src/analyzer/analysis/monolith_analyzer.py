@@ -540,7 +540,10 @@ class MonolithAnalyzer(IAnalyzer):
                 # Use a modified prompt that allows element detection
                 monolith_prompt_template_simple = monolith_prompt_template.replace(
                     "**TASK:** Your ONLY task is to find ALL connections (lines/pipes) between the elements provided in the knowledge base.",
-                    "**TASK:** Find ALL elements (components) AND ALL connections (lines/pipes) in the P&ID diagram."
+                    (
+                        "**TASK:** Find ALL elements (components) AND ALL connections (lines/pipes) in the P&ID diagram.\n"
+                        "**CRITICAL ID RULE:** The `id` you assign to an element MUST be the exact text label found on the diagram (e.g., 'P-201', 'FT-10'). This is essential for matching."
+                    )
                 ).replace(
                     "**CRITICAL KNOWLEDGE BASE (INPUT):**\nHere is a complete JSON list of all known elements on the diagram. You MUST use their exact IDs.\n`{element_list_json}`",
                     "**CRITICAL:** You must recognize elements AND connections independently. No element list is provided - you must detect all elements yourself."
@@ -555,7 +558,22 @@ class MonolithAnalyzer(IAnalyzer):
                     "5. Find ALL connections between ALL elements you detect."
                 ).replace(
                     "**1. \"elements\" List:**\n- CRITICAL: Provide an EMPTY list. You MUST NOT detect elements.\n- ` \"elements\": [] `",
-                    "**1. \"elements\" List:**\n- Find ALL components (pumps, valves, sensors, etc.) in the diagram.\n- REQUIRED KEYS: `\"id\"`, `\"type\"`, `\"label\"`, `\"bbox\"`."
+                    (
+                        "**1. \"elements\" List:**\n"
+                        "- Find ALL components (pumps, valves, sensors, etc.) in the diagram.\n"
+                        "- REQUIRED KEYS: `\"id\"`, `\"type\"`, `\"label\"`, `\"bbox\"`, `\"confidence\"`.\n"
+                        "- **`\"id\"`**: MUST be the text label visible on the diagram (e.g., 'P-201').\n"
+                        "- **`\"label\"`**: The descriptive label (e.g., 'From Transfer Pump P-201').\n"
+                        "- **`\"confidence\"`**: (float, 0.0-1.0) Your confidence (0.9+ = Very Sure, < 0.5 = Guessing)."
+                    )
+                ).replace(
+                    "**2. \"connections\" List:**\n- Find ALL connections (lines/pipes) between ALL elements you detect.",
+                    (
+                        "**2. \"connections\" List:**\n"
+                        "- Find ALL connections (lines/pipes) between ALL elements you detect.\n"
+                        "- REQUIRED KEYS: `\"from_id\"`, `\"to_id\"`, `\"confidence\"`.\n"
+                        "- **`\"confidence\"`**: (float, 0.0-1.0) Your confidence (0.9+ = Very Sure, < 0.5 = Guessing)."
+                    )
                 )
                 monolith_prompt = monolith_prompt_template_simple.replace(
                     "{ignore_zones_str}", "[]"

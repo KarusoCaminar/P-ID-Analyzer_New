@@ -229,19 +229,72 @@ class PipelineCoordinator(IProcessor):
                 logger.error("Both swarm and monolith analysis are disabled. Cannot proceed.")
                 return self._create_error_result("Both analyzers are disabled.")
 
-            # CRITICAL: For simple P&IDs, use parallel analysis (Monolith + Swarm)
-            if strategy == 'simple_pid_strategy':
-                self._update_progress(15, "Phase 2: Simple P&ID analysis (Monolith + Swarm)...")
-                logger.info("CRITICAL: Simple P&ID mode - Using parallel analysis (Monolith + Swarm)")
-                swarm_result, monolith_result = self._run_phase_2_parallel_analysis(
-                    image_path, final_output_dir
+            # --- KORREKTUR: Respektiere use_swarm und use_monolith Flags für Test 2 und 3 ---
+            # WICHTIG: Prüfe die Flags ZUERST, unabhängig von der Phase-0-Strategie
+            if use_monolith and not use_swarm:
+                # --- ECHTER "SIMPLE P&ID" MODUS (TEST 2: Monolith-All) ---
+                self._update_progress(15, "Phase 2: Simple P&ID analysis (Monolith-All)")
+                logger.info("CRITICAL: Simple P&ID mode (Test 2) - Running MONOLITH ONLY.")
+                
+                # Rufe Monolith direkt auf (nicht parallel)
+                from src.analyzer.analysis import MonolithAnalyzer
+                monolith_analyzer = MonolithAnalyzer(
+                    self.llm_client,
+                    self.knowledge_manager,
+                    self.config_service,
+                    self.model_strategy,
+                    self.active_logic_parameters
                 )
+                
+                # Prepare legend context
+                legend_context = {
+                    'symbol_map': self._global_knowledge_repo.get('symbol_map', {}),
+                    'line_map': self._global_knowledge_repo.get('line_map', {})
+                }
+                monolith_analyzer.legend_context = legend_context
+                
+                # CRITICAL: Setze element_list_json auf leere Liste für Simple P&ID Mode
+                monolith_analyzer.element_list_json = "[]"
+                
+                monolith_result = monolith_analyzer.analyze(image_path, Path(final_output_dir), self._excluded_zones)
+                
+                # Swarm wird übersprungen
+                swarm_result = {"elements": [], "connections": []}
+                
+            elif use_swarm and not use_monolith:
+                # --- ECHTER "SWARM ONLY" MODUS (TEST 3) ---
+                self._update_progress(15, "Phase 2: Swarm-Only analysis")
+                logger.info("CRITICAL: Swarm-Only mode (Test 3) - Running SWARM ONLY.")
+                
+                from src.analyzer.analysis import SwarmAnalyzer
+                swarm_analyzer = SwarmAnalyzer(
+                    self.llm_client,
+                    self.knowledge_manager,
+                    self.config_service,
+                    self.model_strategy,
+                    self.active_logic_parameters
+                )
+                
+                # Prepare legend context
+                legend_context = {
+                    'symbol_map': self._global_knowledge_repo.get('symbol_map', {}),
+                    'line_map': self._global_knowledge_repo.get('line_map', {})
+                }
+                swarm_analyzer.legend_context = legend_context
+                
+                swarm_result = swarm_analyzer.analyze(image_path, Path(final_output_dir), self._excluded_zones)
+                
+                # Monolith wird übersprungen
+                monolith_result = {"elements": [], "connections": []}
+                
             else:
+                # --- STANDARD-MODUS (TEST 4, 5a, 5b, 5c) ---
                 # Complex P&IDs: Parallel analysis (Swarm + Monolith)
                 self._update_progress(15, "Phase 2: Parallel core analysis (Swarm + Monolith)...")
                 swarm_result, monolith_result = self._run_phase_2_parallel_analysis(
                     image_path, final_output_dir
                 )
+            # --- ENDE KORREKTUR ---
             
             # Validate and correct coordinates (if validator exists)
             try:
@@ -281,8 +334,22 @@ class PipelineCoordinator(IProcessor):
             
             # Phase 2c: Fusion
             self._update_progress(45, "Phase 2c: Fusion...")
-            fused_result = self._run_phase_2c_fusion(swarm_result, monolith_result)
-            self._analysis_results = fused_result
+            
+            # --- KORREKTUR: Respektiere das 'use_fusion' Flag ---
+            if not self.active_logic_parameters.get('use_fusion', True):
+                logger.warning("SKIPPING Phase 2c: Fusion (use_fusion=False)")
+                # Wenn Fusion übersprungen wird (wie in Test 3),
+                # nimm einfach das Swarm-Ergebnis als Basis.
+                if swarm_result:
+                    self._analysis_results = swarm_result
+                else:
+                    logger.error("Fusion skipped, but Swarm result is also empty. Cannot proceed.")
+                    return self._create_error_result("Swarm analysis failed and fusion was skipped.")
+            else:
+                # Führe die Fusion nur aus, wenn sie aktiviert ist
+                fused_result = self._run_phase_2c_fusion(swarm_result, monolith_result)
+                self._analysis_results = fused_result
+            # --- ENDE KORREKTUR ---
             
             # CRITICAL: Check for missing legend symbols and add them if found by Monolith
             # If legend is present, ensure all legend symbols are detected

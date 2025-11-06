@@ -382,18 +382,24 @@ class KPICalculator:
                 logger.info("No truth elements provided for matching")
         
         # Calculate metrics
-        correctly_found = set(matches.keys())
+        correctly_found = set(matches.keys())  # Truth IDs that were matched
         missed = {el.get('id', f"truth_{i}") for i, el in enumerate(truth_elements) if el.get('id', f"truth_{i}") not in correctly_found}
         hallucinated = [el for el in unmatched_analysis]
         
-        analysis_ids = set()  # For precision calculation
-        for el in analysis_elements:
-            if el.get('id'):
-                analysis_ids.add(el.get('id'))
+        # --- KORREKTUR: Für Precision brauchen wir die Anzahl der korrekt gematchten Analysis-Elemente ---
+        # matches.values() enthält die Analysis-Elemente, die gematcht wurden
+        correctly_found_analysis_ids = set()
+        for analysis_el in matches.values():
+            analysis_id = get_el_field(analysis_el, 'id', '')
+            if analysis_id:
+                correctly_found_analysis_ids.add(analysis_id)
         
-        element_precision = len(correctly_found) / len(analysis_elements) if analysis_elements else 0.0
+        # Precision = Anzahl korrekt gefundener Analysis-Elemente / Anzahl aller Analysis-Elemente
+        element_precision = len(correctly_found_analysis_ids) / len(analysis_elements) if analysis_elements else 0.0
+        # Recall = Anzahl gefundener Truth-Elemente / Anzahl aller Truth-Elemente
         element_recall = len(correctly_found) / len(truth_elements) if truth_elements else 0.0
         element_f1 = 2 * (element_precision * element_recall) / (element_precision + element_recall) if (element_precision + element_recall) > 0 else 0.0
+        # --- ENDE KORREKTUR ---
         
         # Type accuracy (only for matched elements) - with case-insensitive matching and synonym handling
         def normalize_type(type_str: str) -> str:

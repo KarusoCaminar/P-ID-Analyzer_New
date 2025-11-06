@@ -129,6 +129,18 @@ def run_test(
     
     # 1. Pipeline ausführen
     try:
+        # --- KORREKTUR: Circuit Breaker vor jedem Test zurücksetzen ---
+        logger.info("Resetting Circuit Breaker before test...")
+        if hasattr(coordinator, 'llm_client') and hasattr(coordinator.llm_client, 'retry_handler'):
+            if hasattr(coordinator.llm_client.retry_handler, 'circuit_breaker'):
+                coordinator.llm_client.retry_handler.circuit_breaker.reset()
+                logger.info("Circuit Breaker reset to CLOSED.")
+            else:
+                logger.warning("Circuit Breaker not found in retry_handler.")
+        else:
+            logger.warning("LLM client or retry_handler not found. Cannot reset Circuit Breaker.")
+        # --- ENDE KORREKTUR ---
+        
         # Add test metadata to params_override
         params_with_metadata = {
             **param_overrides,

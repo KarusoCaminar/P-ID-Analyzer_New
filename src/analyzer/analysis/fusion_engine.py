@@ -218,12 +218,20 @@ class FusionEngine:
             
             # CASE 2: "Dual Detection" (Both Swarm and Monolith found it)
             elif swarm_found and monolith_found:
-                swarm_conf = max(e.get('confidence', PENALTY_CONFIDENCE) for e in matching_elements if 'swarm' in str(e.get('source', '')).lower())
-                monolith_conf = max(e.get('confidence', PENALTY_CONFIDENCE) for e in matching_elements if 'monolith' in str(e.get('source', '')).lower())
+                # --- KORREKTUR: Prüfe auf leere Liste vor max() ---
+                swarm_elements_filtered = [e for e in matching_elements if 'swarm' in str(e.get('source', '')).lower()]
+                monolith_elements_filtered = [e for e in matching_elements if 'monolith' in str(e.get('source', '')).lower()]
+                
+                swarm_conf = max(e.get('confidence', PENALTY_CONFIDENCE) for e in swarm_elements_filtered) if swarm_elements_filtered else PENALTY_CONFIDENCE
+                monolith_conf = max(e.get('confidence', PENALTY_CONFIDENCE) for e in monolith_elements_filtered) if monolith_elements_filtered else PENALTY_CONFIDENCE
+                
                 # Fallback, falls 'source' fehlt
                 if swarm_conf == PENALTY_CONFIDENCE and monolith_conf == PENALTY_CONFIDENCE:
-                    swarm_conf = max(e.get('confidence', PENALTY_CONFIDENCE) for e in swarm_elements if e.get('id') == el_id)
-                    monolith_conf = max(e.get('confidence', PENALTY_CONFIDENCE) for e in monolith_elements if e.get('id') == el_id)
+                    swarm_elements_fallback = [e for e in swarm_elements if e.get('id') == el_id]
+                    monolith_elements_fallback = [e for e in monolith_elements if e.get('id') == el_id]
+                    swarm_conf = max(e.get('confidence', PENALTY_CONFIDENCE) for e in swarm_elements_fallback) if swarm_elements_fallback else PENALTY_CONFIDENCE
+                    monolith_conf = max(e.get('confidence', PENALTY_CONFIDENCE) for e in monolith_elements_fallback) if monolith_elements_fallback else PENALTY_CONFIDENCE
+                # --- ENDE KORREKTUR ---
                 # Combined confidence: C = C_s + (1 - C_s) * C_m
                 final_confidence = swarm_conf + (1 - swarm_conf) * monolith_conf
                 logger.debug(f"FUSION-DUAL: Element '{el_id}' ({el_type}) found by both → confidence={final_confidence:.2f}")

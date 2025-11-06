@@ -149,56 +149,84 @@ models:
 
   # Definition verschiedener Analyse-Strategien für den CLI-Runner (Möglichkeit für Mischstrategien mit verschiedenen Modellen)
 strategies:
-  # STRATEGY 1: Vollständig Flash - schnell und kosteneffizient
-  all_flash:
-    swarm_model: "Google Gemini 2.5 Flash"
-    monolith_model: "Google Gemini 2.5 Pro"  # CRITICAL: Always Pro for Monolith
-    detail_model: "Google Gemini 2.5 Flash"
-    polyline_model: "Google Gemini 2.5 Flash"
-    correction_model: "Google Gemini 2.5 Flash"
-    critic_model_name: "Google Gemini 2.5 Flash"
-    meta_model: "Google Gemini 2.5 Flash"
+  # STRATEGY 1: QUALITY-FOCUSED (RECOMMENDED) - Beste Qualität für professionelle Projekte
+  # Optimiert für: Komplexe P&IDs, hohe Genauigkeitsanforderungen
+  # Geschwindigkeit: ~15-30 Minuten pro Diagramm
+  # CRITICAL: Pro für Meta/Legend (Phase 1) - gesamte Pipeline basiert darauf!
+  quality_focused:
+    swarm_model: "Google Gemini 2.5 Flash"  # Flash ist ausreichend für Element-Erkennung (viele Tiles)
+    monolith_model: "Google Gemini 2.5 Pro"  # CRITICAL: Pro für Verbindungen (höchste Qualität)
+    detail_model: "Google Gemini 2.5 Pro"  # Pro für bessere Detail-Erkennung
+    polyline_model: "Google Gemini 2.5 Flash"  # Flash ausreichend für Linien-Vektorisierung (CV-basiert)
+    correction_model: "Google Gemini 2.5 Pro"  # Pro für besseres Reasoning bei Korrekturen
+    critic_model_name: "Google Gemini 2.5 Pro"  # Pro für bessere Kritik-Qualität
+    meta_model: "Google Gemini 2.5 Pro"  # CRITICAL: Pro für Legend/Metadata (Phase 1 - Basis der Pipeline!)
   
-  # STRATEGY 2: OPTIMAL - Swarm (Flash) für Geschwindigkeit, Monolith (Pro) für Genauigkeit
+  # STRATEGY 2: BALANCED (DEFAULT) - Guter Kompromiss zwischen Qualität und Geschwindigkeit
+  # Optimiert für: Standard P&IDs, gute Qualität bei akzeptabler Geschwindigkeit
+  # Geschwindigkeit: ~10-20 Minuten pro Diagramm
+  # CRITICAL: Pro für Meta/Legend (Phase 1) - gesamte Pipeline basiert darauf!
   optimal_swarm_monolith:
-    swarm_model: "Google Gemini 2.5 Flash"
-    monolith_model: "Google Gemini 2.5 Pro"
-    detail_model: "Google Gemini 2.5 Flash"  # Fallback
-    polyline_model: "Google Gemini 2.5 Flash"
-    correction_model: "Google Gemini 2.5 Pro"
-    critic_model_name: "Google Gemini 2.5 Pro"
-    meta_model: "Google Gemini 2.5 Flash"
+    swarm_model: "Google Gemini 2.5 Flash"  # Flash für Geschwindigkeit bei vielen Tiles
+    monolith_model: "Google Gemini 2.5 Pro"  # CRITICAL: Pro für Verbindungen (immer Pro!)
+    detail_model: "Google Gemini 2.5 Flash"  # Flash für Fallback
+    polyline_model: "Google Gemini 2.5 Flash"  # Flash ausreichend (CV-basiert)
+    correction_model: "Google Gemini 2.5 Pro"  # Pro für besseres Reasoning
+    critic_model_name: "Google Gemini 2.5 Pro"  # Pro für bessere Kritik
+    meta_model: "Google Gemini 2.5 Pro"  # CRITICAL: Pro für Legend/Metadata (Phase 1 - Basis der Pipeline!)
   
-  # STRATEGY 3: ULTRA-FAST - Swarm (Flash-Lite Preview) für maximale Geschwindigkeit, Monolith (Pro) für Qualität
-  optimal_swarm_monolith_lite:
-    swarm_model: "Google Gemini 2.5 Flash-Lite (Preview)"  # Fastest for swarm (many tiles)
-    monolith_model: "Google Gemini 2.5 Pro"  # CRITICAL: Always Pro for Monolith (better quality)
-    detail_model: "Google Gemini 2.5 Flash"  # Fallback
-    polyline_model: "Google Gemini 2.5 Flash"
-    correction_model: "Google Gemini 2.5 Flash"
-    critic_model_name: "Google Gemini 2.5 Flash"
-    meta_model: "Google Gemini 2.5 Flash"
-  
-  # STRATEGY 4: SIMPLE PID - Optimiert für Simple P&IDs (schnell + guter Qualitäts-Durchschnitt)
-  # Adaptive Strategie (Pro/Lite): Monolith (Pro) für Genauigkeit, Swarm (Flash-Lite Preview) als Spezialist für fehlende Elemente
+  # STRATEGY 3: SIMPLE PID - Optimiert für einfache P&IDs
+  # Optimiert für: Einfache Diagramme, schnelle Analyse
+  # Geschwindigkeit: ~5-15 Minuten pro Diagramm
+  # CRITICAL: Pro für Meta/Legend (Phase 1) - gesamte Pipeline basiert darauf!
   simple_pid_strategy:
-    swarm_model: "Google Gemini 2.5 Flash-Lite (Preview)"  # Spezialist für SamplePoint & ISA-Supply
-    monolith_model: "Google Gemini 2.5 Pro"  # Upgraded to Pro for better precision
-    detail_model: "Google Gemini 2.5 Pro"  # Upgraded to Pro for better precision
-    polyline_model: "Google Gemini 2.5 Flash"
-    correction_model: "Google Gemini 2.5 Pro"  # Upgraded to Pro for better reasoning
-    critic_model_name: "Google Gemini 2.5 Pro"  # Upgraded to Pro for better critique (Multi-Model Critic)
-    meta_model: "Google Gemini 2.5 Flash"
+    swarm_model: "Google Gemini 2.5 Flash"  # Flash ausreichend (keine Flash-Lite mehr)
+    monolith_model: "Google Gemini 2.5 Pro"  # CRITICAL: Pro für Verbindungen
+    detail_model: "Google Gemini 2.5 Pro"  # Pro für bessere Präzision
+    polyline_model: "Google Gemini 2.5 Flash"  # Flash ausreichend (CV-basiert)
+    correction_model: "Google Gemini 2.5 Pro"  # Pro für besseres Reasoning
+    critic_model_name: "Google Gemini 2.5 Pro"  # Pro für bessere Kritik
+    meta_model: "Google Gemini 2.5 Pro"  # CRITICAL: Pro für Legend/Metadata (Phase 1 - Basis der Pipeline!)
+  
+  # STRATEGY 4: ULTRA-FAST (EXPERIMENTAL) - Maximale Geschwindigkeit, reduzierte Qualität
+  # ⚠️ WARNUNG: Nur für schnelle Tests oder wenn Qualität weniger wichtig ist
+  # Optimiert für: Schnelle Iterationen, Tests, Prototyping
+  # Geschwindigkeit: ~5-10 Minuten pro Diagramm
+  # NOTE: Flash-Lite ist hier auskommentiert, aber als Option verfügbar
+  # CRITICAL: Auch hier Pro für Meta/Legend (Phase 1) - zu wichtig für Kompromisse!
+  ultra_fast:
+    swarm_model: "Google Gemini 2.5 Flash"  # Flash statt Flash-Lite (bessere Qualität)
+    # swarm_model: "Google Gemini 2.5 Flash-Lite (Preview)"  # OPTION: Uncomment für maximale Geschwindigkeit (reduzierte Qualität)
+    monolith_model: "Google Gemini 2.5 Pro"  # CRITICAL: Pro bleibt auch hier (Qualität wichtiger!)
+    detail_model: "Google Gemini 2.5 Flash"  # Flash für Geschwindigkeit
+    polyline_model: "Google Gemini 2.5 Flash"  # Flash ausreichend (CV-basiert)
+    correction_model: "Google Gemini 2.5 Flash"  # Flash für Geschwindigkeit (reduzierte Qualität)
+    critic_model_name: "Google Gemini 2.5 Flash"  # Flash für Geschwindigkeit
+    meta_model: "Google Gemini 2.5 Pro"  # CRITICAL: Pro auch hier (Phase 1 zu wichtig!)
   
   # LEGACY: Default Flash (backward compatibility)
+  # NOTE: Auch Legacy sollte Pro für Meta/Legend verwenden (zu wichtig!)
   default_flash:
     swarm_model: "Google Gemini 2.5 Flash"
     monolith_model: "Google Gemini 2.5 Pro"  # CRITICAL: Always Pro for Monolith
     detail_model: "Google Gemini 2.5 Flash"
-    polyline_model: "Google Gemini 2.5 Flash"
+    polyline_model: "Google Gemini 2.5 Flash"  # Flash ausreichend (CV-basiert)
     correction_model: "Google Gemini 2.5 Flash"
     critic_model_name: "Google Gemini 2.5 Flash"
-    meta_model: "Google Gemini 2.5 Flash"
+    meta_model: "Google Gemini 2.5 Pro"  # CRITICAL: Pro für Legend/Metadata (Phase 1 - Basis der Pipeline!)
+  
+  # LEGACY: Vollständig Flash (deprecated - nicht empfohlen)
+  # ⚠️ WARNUNG: Diese Strategie verwendet Flash für Meta/Legend (Phase 1)
+  # Dies ist NICHT empfohlen, da die gesamte Pipeline auf Phase 1 basiert
+  # Nur für schnelle Tests oder wenn Qualität weniger wichtig ist
+  all_flash:
+    swarm_model: "Google Gemini 2.5 Flash"
+    monolith_model: "Google Gemini 2.5 Pro"  # CRITICAL: Always Pro for Monolith
+    detail_model: "Google Gemini 2.5 Flash"
+    polyline_model: "Google Gemini 2.5 Flash"  # Flash ausreichend (CV-basiert)
+    correction_model: "Google Gemini 2.5 Flash"
+    critic_model_name: "Google Gemini 2.5 Flash"
+    meta_model: "Google Gemini 2.5 Flash"  # ⚠️ WARNUNG: Flash statt Pro (nicht empfohlen!)
 
 logic_parameters:
   # Phase 0: Complexity Analysis (REACTIVATED - CV-based fast analysis)
@@ -265,6 +293,14 @@ logic_parameters:
   llm_disk_cache_size_gb: 2
   # Anzahl der Einträge im Memory-Cache (Level 1, LRU)
   llm_memory_cache_size: 100
+  
+  # ----------------------------------------------------
+  # Circuit Breaker Configuration
+  # ----------------------------------------------------
+  # Anzahl Fehler, bevor der Circuit Breaker öffnet (erhöht für komplexe Analysen mit vielen Tiles)
+  circuit_breaker_failure_threshold: 15   # Erhöht von 5 auf 15 für komplexe P&IDs (70 Tiles + 6 Quadranten)
+  # Wartezeit in Sekunden, bevor der Circuit Breaker versucht, sich zu erholen
+  circuit_breaker_recovery_timeout: 120   # Erhöht von 60 auf 120 Sekunden (2 Minuten)
   
   # ----------------------------------------------------
   # LLM Logging Configuration
