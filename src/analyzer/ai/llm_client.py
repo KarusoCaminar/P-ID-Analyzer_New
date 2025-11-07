@@ -408,6 +408,20 @@ class LLMClient:
         
         for attempt in range(max_retries):
             try:
+                # CRITICAL: DSQ Request Smoothing - throttle requests for steady traffic
+                # DSQ Insight: Steady traffic is prioritized over burst traffic
+                from src.analyzer.ai.dsq_optimizer import get_dsq_optimizer
+                dsq_optimizer = get_dsq_optimizer(
+                    initial_requests_per_minute=self.config.get('logic_parameters', {}).get('llm_rate_limit_requests_per_minute', 60),
+                    max_requests_per_minute=self.config.get('logic_parameters', {}).get('llm_rate_limit_requests_per_minute', 300)
+                )
+                
+                # Apply request smoothing (throttle if sending too fast)
+                throttle_delay = dsq_optimizer.get_adaptive_delay()
+                if throttle_delay > 0:
+                    logger.debug(f"DSQ Request Smoothing: Throttling request by {throttle_delay:.2f}s (current rate: {dsq_optimizer.current_rpm:.1f} RPM)")
+                    time.sleep(throttle_delay)
+                
                 # Check circuit breaker before making call (minimizes API calls)
                 if not self.retry_handler.circuit_breaker.can_proceed():
                     logger.warning(

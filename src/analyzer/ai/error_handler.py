@@ -382,15 +382,30 @@ class IntelligentRetryHandler:
         # Calculate exponential backoff with jitter
         import random
         
-        base_backoff = error_info.backoff_seconds
-        exponential_backoff = base_backoff * (2 ** attempt)
-        
-        # Add jitter to prevent thundering herd
-        jitter = random.uniform(0, exponential_backoff * 0.1)
-        backoff_seconds = exponential_backoff + jitter
-        
-        # Cap backoff at reasonable maximum (60s)
-        backoff_seconds = min(backoff_seconds, 60.0)
+        # CRITICAL: For DSQ (Dynamic Shared Quota), use adaptive backoff
+        # DSQ Insight: 429 errors mean shared pool is temporarily overloaded
+        # Longer backoffs are better than aggressive retries
+        if error_info.error_type == ErrorType.RATE_LIMIT:
+            # Use DSQ-optimized backoff for rate limits
+            from src.analyzer.ai.dsq_optimizer import get_dsq_optimizer
+            dsq_optimizer = get_dsq_optimizer()
+            backoff_seconds = dsq_optimizer.calculate_backoff_for_429(
+                attempt=attempt,
+                base_backoff=error_info.backoff_seconds
+            )
+            # Record rate limit for adaptive rate limiting
+            dsq_optimizer.record_rate_limit()
+        else:
+            # Standard exponential backoff for other errors
+            base_backoff = error_info.backoff_seconds
+            exponential_backoff = base_backoff * (2 ** attempt)
+            
+            # Add jitter to prevent thundering herd
+            jitter = random.uniform(0, exponential_backoff * 0.1)
+            backoff_seconds = exponential_backoff + jitter
+            
+            # Cap backoff at reasonable maximum (60s for non-rate-limit errors)
+            backoff_seconds = min(backoff_seconds, 60.0)
         
         logger.info(
             f"Retryable error ({error_info.error_type.value}). "
