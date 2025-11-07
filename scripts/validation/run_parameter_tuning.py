@@ -553,24 +553,32 @@ class ParameterTuningRunner:
         # self.logger.info(f"Results saved to: {results_file}")
     
     def save_summary(self, best_result: Optional[Dict[str, Any]]):
-        """Save summary report."""
+        """Save summary report (thread-safe)."""
         summary_file = self.output_manager.get_data_path("parameter_tuning_summary.json")
+        
+        # Thread-safe: Copy results list while holding lock
+        with self.results_lock:
+            results_copy = copy.deepcopy(self.results)
         
         summary = {
             'timestamp': datetime.now().isoformat(),
             'strategy': STRATEGY,
             'test_image': str(self.test_image),
-            'total_tests': len(self.results),
-            'successful_tests': sum(1 for r in self.results if r.get('success')),
-            'failed_tests': sum(1 for r in self.results if not r.get('success')),
+            'total_tests': len(results_copy),
+            'successful_tests': sum(1 for r in results_copy if r.get('success')),
+            'failed_tests': sum(1 for r in results_copy if not r.get('success')),
+            'worker_pool_config': {
+                'max_workers': self.max_workers,
+                'mode': 'parallel'
+            }
         }
         
         if best_result:
             summary['best_parameters'] = best_result['parameters']
             summary['best_kpis'] = best_result.get('kpis', {})
         
-        # Sort results by Connection F1-Score
-        successful_results = [r for r in self.results if r.get('success') and r.get('kpis')]
+        # Sort results by Connection F1-Score (use results_copy, not self.results)
+        successful_results = [r for r in results_copy if r.get('success') and r.get('kpis')]
         successful_results.sort(key=lambda x: x.get('kpis', {}).get('connection_f1', 0.0), reverse=True)
         
         summary['top_5_results'] = [
