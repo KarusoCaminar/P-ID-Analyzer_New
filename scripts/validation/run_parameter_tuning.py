@@ -487,6 +487,16 @@ if __name__ == "__main__":
     
     runner = ParameterTuningRunner(test_image, test_truth, use_simple=USE_SIMPLE)
     
+    print("=" * 80)
+    print("PARAMETER TUNING - OPTIMIZED VERSION")
+    print("=" * 80)
+    total_combos = len(ADAPTIVE_THRESHOLD_FACTORS) * len(ADAPTIVE_THRESHOLD_MINS) * len(ADAPTIVE_THRESHOLD_MAXS)
+    print(f"Total parameter combinations: {total_combos}")
+    print(f"Estimated time: 3-6 hours (5-10 minutes per test)")
+    print(f"Self-Correction: DISABLED (faster, no circuit breaker issues)")
+    print("=" * 80)
+    print()
+    
     runner.setup_services()
     runner.start_live_monitoring()
     
