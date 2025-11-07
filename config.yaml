@@ -344,10 +344,19 @@ logic_parameters:
   # ----------------------------------------------------
   # LLM Handler / Caching / Timeouts
   # ----------------------------------------------------
+  # CRITICAL: Timeout erhöht für große Bilder und viele Requests
   # Standard-Timeout für einen LLM-Aufruf in Sekunden (höher für starke Modelle wie Pro)
-  llm_default_timeout: 300  # Erhöht von 240 auf 300 Sekunden (5 Minuten) für komplexe P&IDs
+  llm_default_timeout: 600  # Erhöht von 300 auf 600 Sekunden (10 Minuten) für komplexe P&IDs und große Payloads
   # Maximale Anzahl an Wiederholungsversuchen bei einem API-Fehler
-  llm_max_retries: 3
+  llm_max_retries: 5  # Erhöht von 3 auf 5 für bessere Fehlerbehandlung bei Rate Limits
+  # Rate Limiting (für Quota-Management)
+  # WICHTIG: Diese Werte müssen mit deiner Google Cloud Quota übereinstimmen!
+  # Standard-Quota: 60 requests/min, 32k tokens/min
+  # Empfohlene Quota: 300 requests/min, 100k tokens/min (siehe VERTEX_AI_QUOTA_AND_OPTIMIZATION_GUIDE.md)
+  llm_rate_limit_requests_per_minute: 300  # Anpassen basierend auf deiner Google Cloud Quota
+  llm_rate_limit_tokens_per_minute: 100000  # Anpassen basierend auf deiner Google Cloud Quota
+  # Maximale parallele Requests (verhindert Quota-Überschreitung)
+  llm_max_concurrent_requests: 10  # Reduziert parallele Requests, um Rate Limits zu vermeiden
   # Größe des Festplatten-Caches für LLM-Antworten in Gigabyte
   llm_disk_cache_size_gb: 2
   # Anzahl der Einträge im Memory-Cache (Level 1, LRU)
@@ -356,10 +365,11 @@ logic_parameters:
   # ----------------------------------------------------
   # Circuit Breaker Configuration
   # ----------------------------------------------------
+  # CRITICAL: Circuit Breaker optimiert für viele Requests (Parameter-Tuning, Batch-Processing)
   # Anzahl Fehler, bevor der Circuit Breaker öffnet (erhöht für komplexe Analysen mit vielen Tiles)
-  circuit_breaker_failure_threshold: 40   # Erhöht von 20 auf 40 für komplexe P&IDs (76+ API-Aufrufe: 70 Tiles + 6 Quadranten)
+  circuit_breaker_failure_threshold: 100   # Erhöht von 40 auf 100 für viele Requests (Parameter-Tuning: 36 Tests × 10+ Requests)
   # Wartezeit in Sekunden, bevor der Circuit Breaker versucht, sich zu erholen
-  circuit_breaker_recovery_timeout: 180   # Erhöht von 120 auf 180 Sekunden (3 Minuten)
+  circuit_breaker_recovery_timeout: 60   # Reduziert von 180 auf 60 Sekunden für schnelleres Recovery
   
   # ----------------------------------------------------
   # LLM Logging Configuration
