@@ -227,18 +227,39 @@ strategies:
     critic_model_name: "Google Gemini 2.5 Flash"  # Flash für Geschwindigkeit
     meta_model: "Google Gemini 2.5 Pro"  # CRITICAL: Pro auch hier (Phase 1 zu wichtig!)
   
-  # STRATEGY 4: DEFAULT FLASH - Schnellste Strategie (nur Monolith, ganzes Bild)
-  # Optimiert für: Schnelle Analysen, einfache P&IDs
-  # Geschwindigkeit: ~3-8 Minuten pro Diagramm
-  # CRITICAL: Flash-Strategie = Schnell, nur Monolith (kein Swarm, keine Fusion)
-  default_flash:
-    # CRITICAL: Flash-Strategie = schnell, nur Monolith (kein Swarm, keine Fusion)
-    use_swarm_analysis: false  # CRITICAL: Flash = schnell, kein Swarm
+  # STRATEGY 4: HYBRID FUSION - Swarm + Monolith + Fusion (alte default_flash)
+  # Optimiert für: Maximale Qualität durch Kombination beider Analyzer
+  # Geschwindigkeit: ~10-20 Minuten pro Diagramm
+  # CRITICAL: Führt beide Analyzer aus und fusioniert die Ergebnisse
+  hybrid_fusion:
+    use_swarm_analysis: true  # Swarm aktiviert
     use_monolith_analysis: true  # Monolith aktiviert
-    use_fusion: false  # Keine Fusion nötig (nur Monolith)
-    monolith_whole_image: true  # CRITICAL: Analysiere ganzes Bild für Geschwindigkeit (keine Quadranten)
-    swarm_model: "Google Gemini 2.5 Flash"  # Nicht verwendet (use_swarm_analysis: false)
-    monolith_model: "Google Gemini 2.5 Pro"  # CRITICAL: Always Pro for Monolith (NIEMALS Flash!)
+    use_fusion: true  # Fusion aktiviert (kombiniert Swarm + Monolith)
+    use_self_correction_loop: true  # Self-Correction für Qualität
+    use_normalization_engine: true  # Normalization für logische Korrekturen
+    monolith_whole_image: false  # Monolith verwendet Quadranten für große Bilder
+    swarm_model: "Google Gemini 2.5 Flash"
+    monolith_model: "Google Gemini 2.5 Pro"  # CRITICAL: Always Pro for Monolith
+    detail_model: "Google Gemini 2.5 Flash"
+    polyline_model: "Google Gemini 2.5 Flash"  # Flash ausreichend (CV-basiert)
+    correction_model: "Google Gemini 2.5 Flash"
+    critic_model_name: "Google Gemini 2.5 Flash"
+    meta_model: "Google Gemini 2.5 Pro"  # CRITICAL: Pro für Legend/Metadata (Phase 1 - Basis der Pipeline!)
+  
+  # STRATEGY 5: DEFAULT FLASH - Schnellste Strategie (nur Swarm, keine Fusion)
+  # Optimiert für: Schnelle Analysen, kosteneffizient
+  # Geschwindigkeit: ~3-8 Minuten pro Diagramm
+  # CRITICAL: Echte Flash-Strategie = Nur Swarm, kein Monolith, keine Fusion
+  # Verwendung: A/B-Tests, schnelle Iterationen, kosteneffiziente Analysen
+  hybrid_fusion:
+    use_swarm_analysis: true  # Swarm aktiviert (schnell)
+    use_monolith_analysis: false  # CRITICAL: Monolith AUS (Flash = schnell)
+    use_fusion: false  # CRITICAL: Fusion AUS (kein Monolith zu fusionieren)
+    use_self_correction_loop: false  # CRITICAL: Self-Correction AUS (Flash = schnell)
+    use_normalization_engine: true  # WICHTIG: Normalization AN (logische Korrekturen)
+    monolith_whole_image: false  # Nicht verwendet (use_monolith_analysis: false)
+    swarm_model: "Google Gemini 2.5 Flash"  # Flash für Geschwindigkeit
+    monolith_model: "Google Gemini 2.5 Flash"  # Nicht verwendet
     detail_model: "Google Gemini 2.5 Flash"
     polyline_model: "Google Gemini 2.5 Flash"  # Flash ausreichend (CV-basiert)
     correction_model: "Google Gemini 2.5 Flash"
@@ -262,6 +283,10 @@ logic_parameters:
   # Phase 0: Complexity Analysis (REACTIVATED - CV-based fast analysis)
   use_phase0: true  # Enable CV-based complexity analysis for automatic strategy selection
   # use_phase0_llm: false  # LLM not used - CV-only multi-metric analysis
+  
+  # CRITICAL FIX 3: Hybrid Validation (CV + Semantic)
+  # Combines CV line detection with semantic validation for better connection accuracy
+  use_hybrid_validation: true  # Enable hybrid CV + semantic validation
   
   # ----------------------------------------------------
   # Phase 2: Analysis Strategy
@@ -539,7 +564,7 @@ training_camp:
     monolith_whole_image: true  # CRITICAL: Analysiere ganzes Bild, keine Quadranten
   
   # Strategie 1: Der schnelle Allrounder
-  default_flash:
+  hybrid_fusion:
     meta_model: "Google Gemini 2.5 Flash"
     hotspot_model: "Google Gemini 2.5 Flash"
     detail_model: "Google Gemini 2.5 Flash"
