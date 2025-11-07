@@ -190,6 +190,27 @@ strategies:
     critic_model_name: "Google Gemini 2.5 Pro"  # Pro für bessere Kritik
     meta_model: "Google Gemini 2.5 Pro"  # CRITICAL: Pro für Legend/Metadata (Phase 1 - Basis der Pipeline!)
   
+  # STRATEGY 3.5: SIMPLE WHOLE IMAGE - Beste Strategie für einfache P&IDs
+  # CRITICAL: Bewiesen durch MONOLITH_ANALYSIS.md - Swarm (Tiles) ist bei einfachen Bildern schlechter
+  # Optimiert für: Einfache Diagramme, maximale Genauigkeit mit starkem Modell auf ganzem Bild
+  # Geschwindigkeit: ~3-10 Minuten pro Diagramm (schneller als Swarm, da nur 1 LLM-Call)
+  # Strategie: Ein einzelner Aufruf mit starkem Modell auf dem ganzen Bild (keine Quadranten, keine Tiles)
+  # CRITICAL: Pro für Meta/Legend (Phase 1) - gesamte Pipeline basiert darauf!
+  simple_whole_image:
+    use_swarm_analysis: false  # CRITICAL: Swarm deaktiviert (Tiles sind bei einfachen Bildern schlechter)
+    use_monolith_analysis: true  # Monolith aktiviert
+    use_fusion: false  # Keine Fusion nötig (nur Monolith)
+    use_self_correction_loop: true  # Self-Correction für Qualität
+    use_normalization_engine: true  # Wichtig, um "S" -> "pipe" zu fangen
+    monolith_whole_image: true  # CRITICAL: Analysiere ganzes Bild, keine Quadranten
+    swarm_model: "Google Gemini 2.5 Flash"  # Nicht verwendet (use_swarm_analysis: false)
+    monolith_model: "Google Gemini 2.5 Pro"  # CRITICAL: Starkes Modell für ganzes Bild
+    detail_model: "Google Gemini 2.5 Pro"  # Pro für bessere Präzision
+    polyline_model: "Google Gemini 2.5 Flash"  # Flash ausreichend (CV-basiert)
+    correction_model: "Google Gemini 2.5 Pro"  # Pro für besseres Reasoning
+    critic_model_name: "Google Gemini 2.5 Pro"  # Pro für bessere Kritik
+    meta_model: "Google Gemini 2.5 Pro"  # CRITICAL: Pro für Legend/Metadata (Phase 1 - Basis der Pipeline!)
+  
   # STRATEGY 4: ULTRA-FAST (EXPERIMENTAL) - Maximale Geschwindigkeit, reduzierte Qualität
   # ⚠️ WARNUNG: Nur für schnelle Tests oder wenn Qualität weniger wichtig ist
   # Optimiert für: Schnelle Iterationen, Tests, Prototyping

@@ -150,14 +150,6 @@ def main():
             config=config_dict
         )
         
-        # Create pipeline coordinator
-        coordinator = PipelineCoordinator(
-            llm_client=llm_client,
-            knowledge_manager=knowledge_manager,
-            config_service=config_service,
-            progress_callback=CliProgressCallback()
-        )
-        
         # Check image path
         image_path = Path(args.image_path)
         if not image_path.exists():
@@ -167,8 +159,18 @@ def main():
         logger.info(f"Starting analysis of: {image_path}")
         logger.info(f"Using model strategy: default")
         
-        # Run analysis
+        # CRITICAL FIX: Define coordinator outside try block for finally access
+        coordinator = None
         try:
+            # Create pipeline coordinator
+            coordinator = PipelineCoordinator(
+                llm_client=llm_client,
+                knowledge_manager=knowledge_manager,
+                config_service=config_service,
+                progress_callback=CliProgressCallback()
+            )
+            
+            # Run analysis
             result = coordinator.process(
                 image_path=str(image_path),
                 output_dir=args.output_dir,
@@ -191,14 +193,22 @@ def main():
             
             logger.info(f"Results saved to: {args.output_dir or 'outputs'}")
             logger.info("=" * 60)
+        except Exception as e:
+            logger.critical(f"CLI-Fehler: {e}", exc_info=True)
+            sys.exit(1)
         finally:
             # CRITICAL FIX: Shutdown ThreadPoolExecutor to prevent resource leak
-            if llm_client and hasattr(llm_client, 'close'):
+            if coordinator and hasattr(coordinator, 'llm_client') and coordinator.llm_client:
+                logger.info("Fahre LLMClient ThreadPools herunter...")
                 try:
-                    llm_client.close()
-                    logger.debug("LLMClient closed successfully")
+                    if hasattr(coordinator.llm_client, 'close'):
+                        coordinator.llm_client.close()
+                        logger.info("Shutdown abgeschlossen.")
+                    elif hasattr(coordinator.llm_client, 'timeout_executor'):
+                        coordinator.llm_client.timeout_executor.shutdown(wait=True, cancel_futures=False)
+                        logger.info("Shutdown abgeschlossen.")
                 except Exception as e:
-                    logger.warning(f"Error closing LLMClient: {e}")
+                    logger.warning(f"Fehler beim Shutdown: {e}")
         
     except Exception as e:
         logger.error(f"Error during analysis: {e}", exc_info=True)

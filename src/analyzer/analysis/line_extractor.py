@@ -1,7 +1,11 @@
 """
-Line Extractor - Skeleton-based pipeline line extraction.
+Line Extractor - Contour-based pipeline line extraction.
 
-Separates pipeline lines from symbol lines using skeletonization.
+CRITICAL: Replaced Skeletonization with Contour Detection for robustness.
+Skeletonization was unreliable (noise-sensitive, line-width dependent).
+Contour Detection is more stable and handles varying line widths better.
+
+Separates pipeline lines from symbol lines using contour detection.
 This is critical to avoid confusion between symbol internal lines
 and actual pipeline connections.
 """
@@ -22,7 +26,10 @@ logger = logging.getLogger(__name__)
 
 class LineExtractor:
     """
-    Extracts pipeline lines and separates them from symbol lines using skeletonization.
+    Extracts pipeline lines and separates them from symbol lines using contour detection.
+    
+    CRITICAL: Uses Contour Detection instead of Skeletonization for robustness.
+    Contour Detection is more stable against noise and varying line widths.
     
     This is critical to avoid confusion between:
     - Symbol internal lines (e.g., pump symbol lines)
@@ -61,7 +68,7 @@ class LineExtractor:
             - junctions: List of junction points (splits/merges)
             - line_segments: List of line segments with endpoints
         """
-        logger.info("=== Starting skeleton-based line extraction ===")
+            logger.info("=== Starting contour-based line extraction ===")
         
         try:
             # Read image
@@ -82,14 +89,15 @@ class LineExtractor:
             # 2. Isolate pipeline colors (from legend)
             pipeline_colors = self._extract_pipeline_colors(text_removed_image, legend_data)
             
-            # 3. Skeletonize (Zhou/Zhang algorithm)
-            skeleton = self._skeletonize(pipeline_colors)
+            # 3. Extract contours (REPLACED: Skeletonization -> Contour Detection)
+            # CRITICAL: Contour Detection is more robust than Skeletonization
+            contours, polylines = self._extract_contours(pipeline_colors)
             
-            # 4. Detect junctions (points with degree > 2)
-            junctions = self._detect_junctions(skeleton)
+            # 4. Detect junctions (points where multiple contours meet)
+            junctions = self._detect_junctions_from_contours(contours, polylines, img_width, img_height)
             
-            # 5. Vectorize line segments
-            line_segments = self._vectorize_segments(skeleton, junctions)
+            # 5. Use polylines directly (already vectorized from contours)
+            line_segments = polylines
             
             # 5.5. Bridge gaps (PRIORITÄT 3: Gap-Bridging)
             # This connects segments that were broken by text or noise
@@ -222,80 +230,146 @@ class LineExtractor:
         
         return combined_mask
     
-    def _skeletonize(self, binary: np.ndarray) -> np.ndarray:
+    def _extract_contours(
+        self,
+        binary: np.ndarray
+    ) -> Tuple[List[np.ndarray], List[List[List[float]]]]:
         """
-        Skeletonize binary image using Zhang-Suen algorithm.
+        Extract contours from binary image and convert to polylines.
+        
+        CRITICAL: Replaced Skeletonization with Contour Detection for robustness.
+        Contour Detection is more stable against noise and varying line widths.
         
         Args:
             binary: Binary image (0 = background, 255 = foreground)
             
         Returns:
-            Skeletonized image
+            Tuple of (contours, polylines) where:
+            - contours: List of OpenCV contour arrays
+            - polylines: List of simplified polylines (list of [x, y] coordinates)
         """
         # Morphological operations to clean up
         kernel = np.ones((3, 3), np.uint8)
         binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
         binary = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel)
         
-        # Convert to binary (0 or 1)
-        binary = (binary > 128).astype(np.uint8)
+        # Convert to binary (0 or 255)
+        binary = (binary > 128).astype(np.uint8) * 255
         
-        # Skeletonization using morphological operations
-        skeleton = np.zeros(binary.shape, np.uint8)
-        element = cv2.getStructuringElement(cv2.MORPH_CROSS, (3, 3))
+        # Find contours
+        # RETR_CCOMP: Retrieves all contours and organizes them into a two-level hierarchy
+        # CHAIN_APPROX_SIMPLE: Compresses horizontal, vertical, and diagonal segments
+        contours, hierarchy = cv2.findContours(
+            binary,
+            cv2.RETR_CCOMP,
+            cv2.CHAIN_APPROX_SIMPLE
+        )
         
-        while True:
-            opened = cv2.morphologyEx(binary, cv2.MORPH_OPEN, element)
-            temp = cv2.subtract(binary, opened)
-            eroded = cv2.erode(binary, element)
-            skeleton = cv2.bitwise_or(skeleton, temp)
-            binary = eroded.copy()
+        polylines = []
+        img_height, img_width = binary.shape
+        
+        # Convert contours to simplified polylines
+        for contour in contours:
+            if len(contour) < 2:
+                continue
             
-            if cv2.countNonZero(binary) == 0:
-                break
+            # Approximate contour to polyline (Douglas-Peucker algorithm)
+            # epsilon: Maximum distance from original curve to approximated curve
+            # Set epsilon based on image size (smaller for high-res images)
+            epsilon = max(1.0, min(img_width, img_height) * 0.001)  # 0.1% of image size
+            
+            # Approximate contour to polyline
+            approx = cv2.approxPolyDP(contour, epsilon, closed=False)
+            
+            # Convert to list of [x, y] coordinates
+            polyline = []
+            for point in approx:
+                x, y = point[0][0], point[0][1]
+                polyline.append([float(x), float(y)])
+            
+            # Only add polylines with at least 2 points
+            if len(polyline) >= 2:
+                polylines.append(polyline)
         
-        return skeleton * 255
+        logger.info(f"Extracted {len(contours)} contours, converted to {len(polylines)} polylines")
+        
+        return contours, polylines
     
-    def _detect_junctions(self, skeleton: np.ndarray) -> List[Dict[str, Any]]:
+    def _detect_junctions_from_contours(
+        self,
+        contours: List[np.ndarray],
+        polylines: List[List[List[float]]],
+        img_width: int,
+        img_height: int
+    ) -> List[Dict[str, Any]]:
         """
-        Detect junction points (splits/merges) in skeleton.
+        Detect junction points (splits/merges) from contours.
         
-        Junction: point where degree > 2 (multiple lines meet)
+        Junction: point where multiple polylines meet (within tolerance).
+        
+        CRITICAL: Replaced pixel-based junction detection with polyline-based detection.
+        This is more robust and handles varying line widths better.
         
         Args:
-            skeleton: Skeletonized image
+            contours: List of OpenCV contour arrays
+            polylines: List of polylines (list of [x, y] coordinates)
+            img_width: Image width
+            img_height: Image height
             
         Returns:
             List of junction points with coordinates and degree
         """
         junctions = []
+        junction_tolerance = max(5.0, min(img_width, img_height) * 0.01)  # 1% of image size
         
-        # Find all non-zero pixels
-        y_coords, x_coords = np.where(skeleton > 0)
-        
-        # For each pixel, count neighbors
-        for i, (y, x) in enumerate(zip(y_coords, x_coords)):
-            # Count 8-connected neighbors
-            neighbors = 0
-            for dy in [-1, 0, 1]:
-                for dx in [-1, 0, 1]:
-                    if dy == 0 and dx == 0:
-                        continue
-                    ny, nx = y + dy, x + dx
-                    if 0 <= ny < skeleton.shape[0] and 0 <= nx < skeleton.shape[1]:
-                        if skeleton[ny, nx] > 0:
-                            neighbors += 1
+        # Create a map of all polyline endpoints
+        endpoint_map = {}
+        for polyline in polylines:
+            if len(polyline) < 2:
+                continue
             
-            # Junction: degree > 2 (more than 2 neighbors)
-            if neighbors > 2:
-                junctions.append({
-                    'x': float(x),
-                    'y': float(y),
-                    'degree': neighbors,
-                    'id': f"junction_{len(junctions)}"
-                })
+            # Start point
+            start = tuple(polyline[0])
+            if start not in endpoint_map:
+                endpoint_map[start] = []
+            endpoint_map[start].append(polyline)
+            
+            # End point
+            end = tuple(polyline[-1])
+            if end != start:  # Avoid duplicate for single-point polylines
+                if end not in endpoint_map:
+                    endpoint_map[end] = []
+                endpoint_map[end].append(polyline)
         
-        logger.info(f"Detected {len(junctions)} junctions")
+        # Find points where multiple polylines meet (junctions)
+        visited_junctions = set()
+        
+        for point, connected_polylines in endpoint_map.items():
+            if len(connected_polylines) > 1:
+                # Multiple polylines meet at this point = junction
+                # Check if we already have a junction nearby (within tolerance)
+                is_new_junction = True
+                for existing_junction in junctions:
+                    dist = np.sqrt(
+                        (point[0] - existing_junction['x'])**2 +
+                        (point[1] - existing_junction['y'])**2
+                    )
+                    if dist <= junction_tolerance:
+                        is_new_junction = False
+                        # Update degree if higher
+                        if len(connected_polylines) > existing_junction.get('degree', 0):
+                            existing_junction['degree'] = len(connected_polylines)
+                        break
+                
+                if is_new_junction:
+                    junctions.append({
+                        'x': float(point[0]),
+                        'y': float(point[1]),
+                        'degree': len(connected_polylines),
+                        'id': f"junction_{len(junctions)}"
+                    })
+        
+        logger.info(f"Detected {len(junctions)} junctions from contours")
         return junctions
     
     def _vectorize_segments(

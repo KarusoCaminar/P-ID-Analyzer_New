@@ -101,6 +101,17 @@ class MonolithAnalyzer(IAnalyzer):
         
         excluded_zones = excluded_zones or []
         
+        # CRITICAL: Check for simple_whole_image strategy (monolith_whole_image flag)
+        # This strategy uses a single strong model call on the whole image (no quadrants, no tiles)
+        # PROVEN: Swarm (Tiles) is worse for simple images - whole-image analysis is better
+        monolith_whole_image = self.model_strategy.get('monolith_whole_image', False)
+        
+        if monolith_whole_image:
+            # Simple-Whole-Image Strategy: Analyze entire image in one call
+            logger.info("Using Simple-Whole-Image Strategy: Analyzing entire image in single call (no quadrants)")
+            legend_context = getattr(self, 'legend_context', None)
+            return self._analyze_whole_image(image_path, legend_context)
+        
         # ADAPTIVE QUADRANT STRATEGY: Calculate optimal number of quadrants based on image size
         # This replaces the fixed 3000px threshold with an adaptive approach
         # OPTIMIZATION: Use whole-image for small images to get full context (better connection detection)
