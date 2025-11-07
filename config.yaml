@@ -410,6 +410,15 @@ logic_parameters:
   # ----------------------------------------------------
   # DEPRECATED: Skeleton-based line extraction removed - using CV contour detection instead
   # use_skeleton_line_extraction: false
+  
+  # CRITICAL: Adaptive Threshold Parameters for Line-Element Matching
+  # These parameters control how far a line endpoint can be from an element bbox
+  # to still be considered a connection. Too small = no connections found (F1 = 0.0)
+  # Too large = false positives (wrong elements connected)
+  line_extraction:
+    adaptive_threshold_factor: 0.02  # 2% of image diagonal (range: 0.01-0.10)
+    adaptive_threshold_min: 25       # Minimum threshold in pixels (range: 15-40)
+    adaptive_threshold_max: 150      # Maximum threshold in pixels (range: 100-250)
 
   # ----------------------------------------------------
   # Critics

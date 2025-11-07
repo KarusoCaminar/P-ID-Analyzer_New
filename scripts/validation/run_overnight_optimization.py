@@ -75,8 +75,8 @@ PARAMETER_COMBINATIONS = {
     'self_correction_min_quality_score': [85.0, 90.0, 95.0]
 }
 
-# Strategien zu testen
-STRATEGIES_TO_TEST = ['simple_whole_image', 'default_flash']
+# Strategien zu testen (updated for new strategy names)
+STRATEGIES_TO_TEST = ['simple_whole_image', 'default_flash', 'hybrid_fusion']
 
 # Setup Logging
 LoggingService.setup_logging(log_level=logging.INFO)
@@ -153,8 +153,8 @@ def get_strategy_config(config: Dict[str, Any], strategy_name: str) -> Dict[str,
     strategy = strategies.get(strategy_name, {})
     
     if not strategy:
-        logger.warning(f"Strategie '{strategy_name}' nicht gefunden, verwende default_flash")
-        strategy = strategies.get('default_flash', {})
+        logger.warning(f"Strategie '{strategy_name}' nicht gefunden, verwende simple_whole_image")
+        strategy = strategies.get('simple_whole_image', {})
     
     return strategy
 
