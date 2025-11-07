@@ -219,7 +219,7 @@ strategies:
   # CRITICAL: Auch hier Pro für Meta/Legend (Phase 1) - zu wichtig für Kompromisse!
   ultra_fast:
     swarm_model: "Google Gemini 2.5 Flash"  # Flash statt Flash-Lite (bessere Qualität)
-    # swarm_model: "Google Gemini 2.5 Flash-Lite (Preview)"  # OPTION: Uncomment für maximale Geschwindigkeit (reduzierte Qualität)
+    # swarm_model: "Google Gemini 2.5 Flash-Lite (Preview)"  # DISABLED: Flash-Lite ist aktuell nicht verfügbar
     monolith_model: "Google Gemini 2.5 Pro"  # CRITICAL: Pro bleibt auch hier (Qualität wichtiger!)
     detail_model: "Google Gemini 2.5 Flash"  # Flash für Geschwindigkeit
     polyline_model: "Google Gemini 2.5 Flash"  # Flash ausreichend (CV-basiert)
