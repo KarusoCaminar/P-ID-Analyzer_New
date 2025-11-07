@@ -58,9 +58,15 @@ def is_raw_response_valid(
             logger.warning("LLM response object has .text but not valid JSON - validation failed")
             return False
     
-    # Must be a dictionary at this point
-    if not isinstance(raw_response, dict):
-        logger.warning(f"LLM response is not a dictionary (type: {type(raw_response).__name__}) - validation failed")
+    # CRITICAL FIX: Accept lists and strings (parser will convert them)
+    # Professional companies accept various response formats (dict, list, string)
+    if isinstance(raw_response, list):
+        logger.info(f"LLM response is a list (length={len(raw_response)}) - will convert to dict during parsing")
+        return True  # Accept list, parser will convert to dict
+    
+    # Must be a dictionary at this point (or string, which will be parsed)
+    if not isinstance(raw_response, (dict, str)):
+        logger.warning(f"LLM response is not a dictionary or string (type: {type(raw_response).__name__}) - validation failed")
         return False
     
     # Check for empty dictionary

@@ -940,8 +940,30 @@ class LLMClient:
         response: Any,
         expected_json_keys: Optional[List[str]] = None
     ) -> Union[Dict[str, Any], str]:
-        """Parse LLM response."""
-        # CRITICAL FIX: Accept dict/str responses before checking .text attribute
+        """
+        Parse LLM response.
+        
+        CRITICAL FIX: Accepts dict, list, or string responses.
+        Professional companies accept various response formats and convert them.
+        """
+        # Helper function to convert list to dict
+        def convert_list_to_dict(parsed_list: List[Any], expected_keys: Optional[List[str]]) -> Dict[str, Any]:
+            """Convert list response to dict based on expected keys."""
+            if expected_keys:
+                if "elements" in expected_keys:
+                    logger.info(f"Converting list to dict with 'elements' key (length={len(parsed_list)})")
+                    return {"elements": parsed_list}
+                elif "connections" in expected_keys:
+                    logger.info(f"Converting list to dict with 'connections' key (length={len(parsed_list)})")
+                    return {"connections": parsed_list}
+                else:
+                    logger.info(f"Converting list to dict with 'data' key (length={len(parsed_list)})")
+                    return {"data": parsed_list}
+            else:
+                logger.info(f"Converting list to dict with 'data' key (length={len(parsed_list)})")
+                return {"data": parsed_list}
+        
+        # CRITICAL FIX: Accept dict/str/list responses before checking .text attribute
         if isinstance(response, dict):
             # Already a dict - validate expected keys if provided
             if expected_json_keys:
@@ -949,6 +971,11 @@ class LLMClient:
                 if missing:
                     logger.warning(f"Expected JSON keys missing: {missing}")
             return response
+        
+        if isinstance(response, list):
+            # CRITICAL FIX: Handle list responses (convert to dict)
+            logger.info(f"LLM returned list instead of dict - converting... (length={len(response)})")
+            return convert_list_to_dict(response, expected_json_keys)
         
         if isinstance(response, str):
             # Already a string - try to parse as JSON
@@ -961,6 +988,10 @@ class LLMClient:
                         if missing:
                             logger.warning(f"Expected JSON keys missing: {missing}")
                     return parsed
+                elif isinstance(parsed, list):
+                    # CRITICAL FIX: Handle parsed list from string
+                    logger.info(f"Parsed JSON string is a list - converting to dict... (length={len(parsed)})")
+                    return convert_list_to_dict(parsed, expected_json_keys)
                 return text
             except json.JSONDecodeError:
                 # Try to extract JSON from markdown code blocks
@@ -969,6 +1000,8 @@ class LLMClient:
                 if json_match:
                     try:
                         parsed = json.loads(json_match.group(1))
+                        if isinstance(parsed, list):
+                            return convert_list_to_dict(parsed, expected_json_keys)
                         return parsed
                     except json.JSONDecodeError:
                         pass
@@ -976,7 +1009,7 @@ class LLMClient:
         
         # Check for .text attribute (Vertex AI response object)
         if not hasattr(response, 'text'):
-            logger.error(f"LLM response has no 'text' attribute and is not dict/str. Type: {type(response)}")
+            logger.error(f"LLM response has no 'text' attribute and is not dict/str/list. Type: {type(response)}")
             return {}
         
         text = response.text.strip()
@@ -991,6 +1024,10 @@ class LLMClient:
                     if missing:
                         logger.warning(f"Expected JSON keys missing: {missing}")
                 return parsed
+            elif isinstance(parsed, list):
+                # CRITICAL FIX: Handle parsed list from response.text
+                logger.info(f"Parsed response.text is a list - converting to dict... (length={len(parsed)})")
+                return convert_list_to_dict(parsed, expected_json_keys)
             return text
         except json.JSONDecodeError:
             # Try to extract JSON from markdown code blocks
@@ -999,6 +1036,8 @@ class LLMClient:
             if json_match:
                 try:
                     parsed = json.loads(json_match.group(1))
+                    if isinstance(parsed, list):
+                        return convert_list_to_dict(parsed, expected_json_keys)
                     return parsed
                 except json.JSONDecodeError:
                     pass
