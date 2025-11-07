@@ -54,7 +54,7 @@ class LineExtractor:
         legend_data: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """
-        Extract pipeline lines with skeletonization.
+        Extract pipeline lines using contour detection (CV-based).
         
         Args:
             image_path: Path to image
@@ -83,7 +83,7 @@ class LineExtractor:
             masked_image = self._mask_symbols(img, elements, excluded_zones, img_width, img_height)
             
             # 1.5. Remove text labels (PRIORITÄT 2: Text-Removal)
-            # This prevents text from breaking lines during skeletonization
+            # This prevents text from breaking lines during contour detection
             text_removed_image = self._remove_text_labels(masked_image)
             
             # 2. Isolate pipeline colors (from legend)
@@ -371,116 +371,6 @@ class LineExtractor:
         
         logger.info(f"Detected {len(junctions)} junctions from contours")
         return junctions
-    
-    def _vectorize_segments(
-        self,
-        skeleton: np.ndarray,
-        junctions: List[Dict[str, Any]]
-    ) -> List[List[List[float]]]:
-        """
-        Vectorize skeleton into line segments.
-        
-        Args:
-            skeleton: Skeletonized image
-            junctions: List of junction points
-            
-        Returns:
-            List of line segments (polylines)
-        """
-        segments = []
-        
-        # Create junction map for fast lookup
-        junction_map = {}
-        for j in junctions:
-            jx, jy = int(j['x']), int(j['y'])
-            junction_map[(jy, jx)] = j
-        
-        # Find all line pixels
-        y_coords, x_coords = np.where(skeleton > 0)
-        
-        visited = set()
-        img_height, img_width = skeleton.shape
-        
-        # Extract segments between junctions
-        for y, x in zip(y_coords, x_coords):
-            if (y, x) in visited:
-                continue
-            
-            # If this is a junction, skip (handled separately)
-            if (y, x) in junction_map:
-                continue
-            
-            # Trace line segment
-            segment = self._trace_line_segment(skeleton, x, y, junction_map, visited, img_width, img_height)
-            
-            if len(segment) > 1:
-                segments.append(segment)
-        
-        logger.info(f"Vectorized {len(segments)} line segments")
-        return segments
-    
-    def _trace_line_segment(
-        self,
-        skeleton: np.ndarray,
-        start_x: int,
-        start_y: int,
-        junction_map: Dict[Tuple[int, int], Dict[str, Any]],
-        visited: set,
-        img_width: int,
-        img_height: int
-    ) -> List[List[float]]:
-        """
-        Trace a line segment from start point to junction or endpoint.
-        
-        Args:
-            skeleton: Skeletonized image
-            start_x: Start x coordinate
-            start_y: Start y coordinate
-            junction_map: Map of junction coordinates
-            visited: Set of visited pixels
-            img_width: Image width
-            img_height: Image height
-            
-        Returns:
-            List of [x, y] coordinates
-        """
-        segment = []
-        current_x, current_y = start_x, start_y
-        
-        while True:
-            # Add current point
-            segment.append([float(current_x), float(current_y)])
-            visited.add((current_y, current_x))
-            
-            # Check if we hit a junction
-            if (current_y, current_x) in junction_map:
-                break
-            
-            # Find next neighbor
-            next_x, next_y = None, None
-            neighbors_found = 0
-            
-            for dy in [-1, 0, 1]:
-                for dx in [-1, 0, 1]:
-                    if dy == 0 and dx == 0:
-                        continue
-                    ny, nx = current_y + dy, current_x + dx
-                    if 0 <= ny < img_height and 0 <= nx < img_width:
-                        if skeleton[ny, nx] > 0 and (ny, nx) not in visited:
-                            neighbors_found += 1
-                            if next_x is None:
-                                next_x, next_y = nx, ny
-            
-            # End of segment (no more neighbors or multiple neighbors = junction)
-            if neighbors_found == 0:
-                break
-            elif neighbors_found > 1:
-                # Multiple neighbors = junction (should have been in map)
-                break
-            
-            current_x, current_y = next_x, next_y
-        
-        return segment
     
     def _match_to_connections(
         self,

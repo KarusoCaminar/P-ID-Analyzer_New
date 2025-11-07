@@ -1646,7 +1646,7 @@ Be honest and strict in your evaluation."""
         logger.info(f"Polyline extraction complete: {len(polyline_results)} polylines extracted.")
         
         # CRITICAL: CV-based line extraction for connection verification (Pattern 4)
-        # Extract pipeline lines using CV (skeletonization) for verification
+        # Extract pipeline lines using CV (contour detection) for verification
         logger.info("Extracting pipeline lines with CV for connection verification...")
         try:
             from src.analyzer.analysis.line_extractor import LineExtractor

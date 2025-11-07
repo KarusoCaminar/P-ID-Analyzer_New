@@ -383,8 +383,8 @@ logic_parameters:
   # ----------------------------------------------------
   # Line Extraction
   # ----------------------------------------------------
-  # Use skeleton-based line extraction instead of LLM-based
-  use_skeleton_line_extraction: false
+  # DEPRECATED: Skeleton-based line extraction removed - using CV contour detection instead
+  # use_skeleton_line_extraction: false
 
   # ----------------------------------------------------
   # Critics

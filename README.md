@@ -80,7 +80,7 @@ Das System verwendet eine modulare Phase-basierte Architektur:
 - **Zweck**: Extrahiert präzise Polylinien für Verbindungen
 - **Prozess**: 
   - Option 1: LLM-basiert (Standard)
-  - Option 2: Skeleton-basiert (präziser, aber langsamer)
+  - Option 2: CV-basiert (Contour Detection, robuster gegen Rauschen)
 - **Output**: Polylinien-Koordinaten für jede Verbindung
 - **Datei**: `src/analyzer/core/pipeline_coordinator.py` → `_run_phase_2e_polyline_refinement()`
 
@@ -412,13 +412,18 @@ Alle Dokumentationen finden Sie im **[docs/](docs/)** Ordner:
 
 ## 📝 License
 
-[Lizenz-Informationen hier einfügen]
+Dieses Projekt ist unter der MIT-Lizenz lizenziert. Siehe [LICENSE](LICENSE) für Details.
 
 ---
 
 ## 👥 Contributors
 
-[Contributor-Informationen hier einfügen]
+- **Moritz Heinelt** - Hauptentwickler und Architekt
+  - Projekt-Erstellung und -Architektur
+  - Pipeline-Design und Implementierung
+  - AI-Integration (Google Gemini)
+  - CV-basierte Komponenten
+  - Active Learning System
 
 ---
 

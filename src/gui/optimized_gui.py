@@ -164,7 +164,8 @@ class OptimizedGUI(tk.Tk):
         self.current_phase = None
         
         # New features for analysis
-        self.use_skeleton_extraction_var = tk.BooleanVar(value=False)
+        # DEPRECATED: Skeleton extraction removed - using CV contour detection instead
+        # self.use_skeleton_extraction_var = tk.BooleanVar(value=False)
         self.use_topology_critic_var = tk.BooleanVar(value=True)
         self.use_legend_consistency_critic_var = tk.BooleanVar(value=True)
         self.use_two_pass_var = tk.BooleanVar(value=False)
@@ -537,9 +538,9 @@ class OptimizedGUI(tk.Tk):
         advanced_frame.pack(fill=tk.X, pady=(0, 10))
         
         # Row 1
-        skeleton_cb = ttk.Checkbutton(advanced_frame, text="Skeleton Line Extraction", variable=self.use_skeleton_extraction_var)
-        skeleton_cb.grid(row=0, column=0, sticky=tk.W, padx=5)
-        self._create_tooltip(skeleton_cb, "Skeleton Line Extraction:\n\nTrennt Pipeline-Linien von Symbol-Linien\nmit Skeletonization.\nVorteil: Präzisere Polylines, keine Symbol-Verwechslung\nNachteil: +5-10 Sekunden Verarbeitungszeit\nEmpfohlen: Für komplexe Diagramme")
+        # DEPRECATED: Skeleton Line Extraction removed - using CV contour detection instead
+        # skeleton_cb = ttk.Checkbutton(advanced_frame, text="Skeleton Line Extraction", variable=self.use_skeleton_extraction_var)
+        # skeleton_cb.grid(row=0, column=0, sticky=tk.W, padx=5)
         
         topology_cb = ttk.Checkbutton(advanced_frame, text="Topology Critic", variable=self.use_topology_critic_var)
         topology_cb.grid(row=0, column=1, sticky=tk.W, padx=5)
@@ -1223,7 +1224,7 @@ Weitere Informationen:
                             'use_polyline_refinement': self.use_polyline_var.get(),
                             'use_self_correction': self.use_self_correction_var.get(),
                             # NEW: Advanced features
-                            'use_skeleton_line_extraction': self.use_skeleton_extraction_var.get(),
+                            # DEPRECATED: use_skeleton_line_extraction removed - using CV contour detection instead
                             'use_topology_critic': self.use_topology_critic_var.get(),
                             'use_legend_consistency_critic': self.use_legend_consistency_critic_var.get(),
                             'two_pass_enabled': self.use_two_pass_var.get(),
@@ -1618,7 +1619,7 @@ Weitere Informationen:
                         'use_predictive_completion': self.use_predictive_var.get(),
                         'use_polyline_refinement': self.use_polyline_var.get(),
                         'use_self_correction': self.use_self_correction_var.get(),
-                        'use_skeleton_line_extraction': self.use_skeleton_extraction_var.get(),
+                        # DEPRECATED: use_skeleton_line_extraction removed - using CV contour detection instead
                         'use_topology_critic': self.use_topology_critic_var.get(),
                         'use_legend_consistency_critic': self.use_legend_consistency_critic_var.get(),
                         'two_pass_enabled': self.use_two_pass_var.get(),
