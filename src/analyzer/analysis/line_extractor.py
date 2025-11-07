@@ -13,13 +13,9 @@ from typing import List, Dict, Any, Optional, Tuple
 from pathlib import Path
 from PIL import Image
 
-# Optional: pytesseract for text removal
-try:
-    import pytesseract
-    TESSERACT_AVAILABLE = True
-except ImportError:
-    TESSERACT_AVAILABLE = False
-    # Logger wird später definiert, daher hier kein logger.warning
+# CRITICAL FIX: pytesseract import moved inside function to make dependency truly optional
+# This prevents module-level import failures if pytesseract is not installed
+TESSERACT_AVAILABLE = None  # Will be set inside _remove_text_labels() function
 
 logger = logging.getLogger(__name__)
 
@@ -531,10 +527,20 @@ class LineExtractor:
             gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
             
             # Method 1: Use pytesseract if available (more accurate)
-            if TESSERACT_AVAILABLE:
+            # CRITICAL FIX: Import pytesseract inside function to make dependency truly optional
+            # This prevents module-level import failures
+            try:
+                import pytesseract
+                from pytesseract import Output
+                tesseract_available = True
+            except ImportError:
+                tesseract_available = False
+                logger.debug("pytesseract not available - using CV fallback for text removal")
+            
+            if tesseract_available:
                 try:
                     # Get text bounding boxes
-                    data = pytesseract.image_to_data(gray, output_type=pytesseract.Output.DICT)
+                    data = pytesseract.image_to_data(gray, output_type=Output.DICT)
                     
                     # Create mask for text regions
                     text_mask = np.zeros(gray.shape, dtype=np.uint8)

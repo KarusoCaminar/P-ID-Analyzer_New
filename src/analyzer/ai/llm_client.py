@@ -24,6 +24,7 @@ from PIL import Image
 
 from .error_handler import IntelligentRetryHandler, CircuitBreaker, ErrorType
 from src.utils.schemas import validate_request_payload, validate_response
+from src.utils.response_validator import is_raw_response_valid
 from src.utils.debug_capture import (
     generate_request_id, capture_request, capture_response, write_debug_file
 )
@@ -433,7 +434,28 @@ class LLMClient:
                 except Exception as e:
                     logger.debug(f"Failed to capture response: {e}")
                 
-                # Parse response
+                # Pattern 2: Defensive JSON validation before parsing
+                # This prevents ValidationError crashes from corrupt or empty responses
+                if not is_raw_response_valid(response, expected_keys=expected_json_keys):
+                    logger.error("LLM response failed validation, discarding.")
+                    llm_logger.error(
+                        f"RESPONSE_VALIDATION_FAILED: Response structure invalid",
+                        extra={'request_id': request_id}
+                    )
+                    # Record failure for circuit breaker
+                    self.retry_handler.record_failure(ValueError("Invalid response structure"))
+                    # Try retry if attempts remaining
+                    if attempt < max_retries - 1:
+                        should_retry, backoff_seconds = self.retry_handler.should_retry(
+                            ValueError("Invalid response structure"), attempt, max_retries
+                        )
+                        if should_retry:
+                            time.sleep(backoff_seconds)
+                            continue
+                    # All retries exhausted or non-retryable
+                    return None
+                
+                # Parse response (now safe - validation passed)
                 parsed_response = self._parse_response(response, expected_json_keys)
                 
                 # ENHANCED LOGGING: Log response details
@@ -605,12 +627,95 @@ class LLMClient:
                     continue
                 else:
                     break
+            
+            except ValueError as e:
+                # Pattern 4: Specific exception handling for ValueError (content blocking, invalid input)
+                # Vertex AI SDK raises ValueError for content blocking
+                last_error = e
+                error_message = str(e).lower()
+                
+                # Capture error response
+                try:
+                    capture_response(request_id, None, error=e, output_dir=self.debug_dir)
+                except Exception:
+                    pass
+                
+                # Check if this is a content blocking error
+                if any(term in error_message for term in ["blocked", "safety", "harm", "content policy"]):
+                    logger.error(f"LLM call blocked by content policy (attempt {attempt + 1}/{max_retries}): {e}")
+                    llm_logger.error(
+                        f"CONTENT_BLOCKED [message={str(e)}] [attempt={attempt + 1}/{max_retries}]",
+                        extra={'request_id': request_id}
+                    )
+                    api_error_data = {
+                        "message": str(e),
+                        "stack": traceback.format_exc(),
+                        "code": "CONTENT_BLOCKED"
+                    }
+                    # Content blocking is permanent - don't retry
+                    self.retry_handler.record_failure(e)
+                    break
+                else:
+                    # Other ValueError (invalid input, etc.) - might be retryable
+                    logger.error(f"LLM call ValueError (attempt {attempt + 1}/{max_retries}): {e}")
+                    llm_logger.error(
+                        f"VALUE_ERROR [message={str(e)}] [attempt={attempt + 1}/{max_retries}]",
+                        extra={'request_id': request_id}
+                    )
+                    api_error_data = {
+                        "message": str(e),
+                        "stack": traceback.format_exc(),
+                        "code": "VALUE_ERROR"
+                    }
+                    self.retry_handler.record_failure(e)
+                    should_retry, backoff_seconds = self.retry_handler.should_retry(e, attempt, max_retries)
+                    if should_retry:
+                        time.sleep(backoff_seconds)
+                        continue
+                    else:
+                        break
+            
+            except (ConnectionError, OSError) as e:
+                # Pattern 4: Specific exception handling for network/connection errors
+                last_error = e
+                logger.warning(f"LLM call network/connection error (attempt {attempt + 1}/{max_retries}): {e}")
+                llm_logger.warning(
+                    f"NETWORK_ERROR [type={type(e).__name__}] [message={str(e)}] [attempt={attempt + 1}/{max_retries}]",
+                    extra={'request_id': request_id}
+                )
+                
+                # Capture error response
+                try:
+                    capture_response(request_id, None, error=e, output_dir=self.debug_dir)
+                except Exception:
+                    pass
+                
+                # Record failure
+                self.retry_handler.record_failure(e)
+                
+                # Update error data
+                api_error_data = {
+                    "message": str(e),
+                    "stack": traceback.format_exc(),
+                    "code": "NETWORK_ERROR"
+                }
+                
+                # Intelligent retry decision
+                should_retry, backoff_seconds = self.retry_handler.should_retry(e, attempt, max_retries)
+                if should_retry:
+                    time.sleep(backoff_seconds)
+                    continue
+                else:
+                    break
                     
             except Exception as e:
+                # Pattern 4: Generic exception as last resort (catch-all)
+                # This should only catch unexpected errors not covered by specific handlers above
                 last_error = e
-                logger.error(f"LLM call error (attempt {attempt + 1}/{max_retries}): {e}")
+                error_type = type(e).__name__
+                logger.error(f"LLM call unexpected error (attempt {attempt + 1}/{max_retries}): {error_type}: {e}")
                 llm_logger.error(
-                    f"ERROR [type={type(e).__name__}] [message={str(e)}] [attempt={attempt + 1}/{max_retries}]",
+                    f"ERROR [type={error_type}] [message={str(e)}] [attempt={attempt + 1}/{max_retries}]",
                     extra={'request_id': request_id}, exc_info=True
                 )
                 

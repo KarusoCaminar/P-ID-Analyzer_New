@@ -194,6 +194,76 @@ class KPICalculator:
         
         return inter_area / union_area
     
+    def _calculate_graph_edit_distance(
+        self,
+        analysis_connections: Set[Tuple[str, str]],
+        truth_connections: Set[Tuple[str, str]],
+        id_mapping: Dict[str, str]
+    ) -> Dict[str, Any]:
+        """
+        Calculate Graph-Edit-Distance (GED) between analysis and truth graphs.
+        
+        Graph-Edit-Distance measures the structural similarity between two graphs by
+        counting the minimum number of operations (add/delete edges) needed to transform
+        one graph into another.
+        
+        This is a normalized approximation that uses edge differences:
+        - Add operations: edges in truth but not in analysis (missed connections)
+        - Delete operations: edges in analysis but not in truth (hallucinated connections)
+        - Total GED = |missed| + |hallucinated|
+        - Normalized GED = GED / max(|truth|, |analysis|, 1)
+        
+        Args:
+            analysis_connections: Set of (from_id, to_id) tuples from analysis
+            truth_connections: Set of (from_id, to_id) tuples from truth (already mapped)
+            id_mapping: Mapping from truth IDs to analysis IDs (for documentation, not used in calculation)
+            
+        Returns:
+            Dictionary with GED metrics:
+            - raw_distance: Raw GED (number of operations)
+            - normalized_distance: Normalized GED (0.0 = identical, 1.0 = completely different)
+            - similarity_score: Similarity score (1.0 = identical, 0.0 = completely different)
+            - add_operations: Number of edges to add (missed connections)
+            - delete_operations: Number of edges to delete (hallucinated connections)
+            - match_ratio: Ratio of matching edges to total edges
+        """
+        # Calculate edge differences
+        missed_edges = truth_connections - analysis_connections
+        hallucinated_edges = analysis_connections - truth_connections
+        matched_edges = analysis_connections & truth_connections
+        
+        # Raw GED: minimum operations to transform analysis graph to truth graph
+        add_ops = len(missed_edges)      # Add missed connections
+        delete_ops = len(hallucinated_edges)  # Delete hallucinated connections
+        raw_ged = add_ops + delete_ops
+        
+        # Normalized GED: normalize by the size of the larger graph
+        max_graph_size = max(len(truth_connections), len(analysis_connections), 1)
+        normalized_ged = raw_ged / max_graph_size if max_graph_size > 0 else 1.0
+        
+        # Match ratio: percentage of edges that match
+        total_edges = len(truth_connections) + len(hallucinated_edges)  # Truth + extra
+        match_ratio = len(matched_edges) / total_edges if total_edges > 0 else 0.0
+        
+        # Structural similarity score (1.0 = identical, 0.0 = completely different)
+        # Based on normalized GED, inverted so higher is better
+        similarity_score = 1.0 - normalized_ged
+        
+        logger.debug(f"Graph-Edit-Distance: raw={raw_ged}, normalized={normalized_ged:.3f}, "
+                    f"similarity={similarity_score:.3f}, match_ratio={match_ratio:.3f}")
+        
+        return {
+            'raw_distance': raw_ged,
+            'normalized_distance': round(normalized_ged, 4),
+            'similarity_score': round(similarity_score, 4),
+            'add_operations': add_ops,
+            'delete_operations': delete_ops,
+            'match_ratio': round(match_ratio, 4),
+            'matched_edges': len(matched_edges),
+            'missed_edges': len(missed_edges),
+            'hallucinated_edges': len(hallucinated_edges)
+        }
+    
     def _calculate_quality_metrics(
         self,
         analysis_data: Dict[str, Any],
@@ -496,12 +566,26 @@ class KPICalculator:
         connection_recall = len(correctly_connected) / len(truth_connections) if truth_connections else 0.0
         connection_f1 = 2 * (connection_precision * connection_recall) / (connection_precision + connection_recall) if (connection_precision + connection_recall) > 0 else 0.0
         
+        # Graph-Edit-Distance (GED) - Measures structural similarity between graphs
+        # GED is the minimum number of operations (add/delete/rename edges) needed to transform one graph into another
+        # For efficiency, we use a normalized approximation based on edge differences
+        graph_edit_distance = self._calculate_graph_edit_distance(
+            analysis_connections, mapped_truth_connections, id_mapping
+        )
+        
         # Overall quality score
         quality_score = (
             element_f1 * 0.4 +  # Element F1 (40%)
             connection_f1 * 0.3 +  # Connection F1 (30%)
             type_accuracy * 0.3  # Type accuracy (30%)
         ) * 100
+        
+        # Graph-Edit-Distance (GED) - Measures structural similarity between graphs
+        # GED is the minimum number of operations (add/delete/rename edges) needed to transform one graph into another
+        # For efficiency, we use a normalized approximation based on edge differences
+        graph_edit_distance = self._calculate_graph_edit_distance(
+            analysis_connections, mapped_truth_connections, id_mapping
+        )
         
         return {
             'element_precision': round(element_precision, 3),
@@ -515,7 +599,10 @@ class KPICalculator:
             'missed_elements': len(missed),
             'hallucinated_elements': len(hallucinated),
             'missed_connections': len(missed_connections),
-            'hallucinated_connections': len(hallucinated_connections)
+            'hallucinated_connections': len(hallucinated_connections),
+            'graph_edit_distance': graph_edit_distance,
+            'normalized_graph_edit_distance': graph_edit_distance.get('normalized_distance', 1.0),
+            'graph_similarity_score': graph_edit_distance.get('similarity_score', 0.0)
         }
 
 

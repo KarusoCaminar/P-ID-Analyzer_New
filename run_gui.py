@@ -36,6 +36,7 @@ except (ImportError, Exception):
 
 # Run GUI
 if __name__ == "__main__":
+    app = None
     try:
         from src.gui.optimized_gui import OptimizedGUI
         
@@ -46,5 +47,13 @@ if __name__ == "__main__":
         import traceback
         traceback.print_exc()
         sys.exit(1)
+    finally:
+        # CRITICAL FIX: Ensure cleanup happens even if mainloop() raises exception
+        if app and hasattr(app, 'llm_client') and app.llm_client:
+            try:
+                if hasattr(app.llm_client, 'close'):
+                    app.llm_client.close()
+            except Exception:
+                pass  # Ignore errors during cleanup
 
 

@@ -21,7 +21,7 @@ from datetime import datetime
 project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
 
-from src.utils.json_encoder import PydanticJSONEncoder
+from src.utils.json_encoder import PydanticJSONEncoder, json_dump_safe
 
 # Load .env file automatically (CRITICAL: Lädt GCP-Credentials automatisch)
 try:
@@ -289,21 +289,9 @@ def run_test(
         # Save results JSON to test directory (with datetime serialization support)
         results_file = test_output_dir / "results.json"
         
-        # Helper function to serialize datetime and other non-serializable objects
-        def json_serializer(obj):
-            """JSON serializer for objects not serializable by default json code"""
-            if isinstance(obj, datetime):
-                return obj.isoformat()
-            elif hasattr(obj, '__dict__'):
-                return obj.__dict__
-            elif hasattr(obj, 'model_dump'):
-                return obj.model_dump()
-            elif hasattr(obj, 'dict'):
-                return obj.dict()
-            return str(obj)
-        
+        # CRITICAL FIX: Use json_dump_safe() instead of json.dump() to handle datetime and Pydantic models
         with open(results_file, 'w', encoding='utf-8') as f:
-            json.dump(result_dict, f, indent=2, ensure_ascii=False, default=json_serializer)
+            json_dump_safe(result_dict, f, indent=2, ensure_ascii=False)
         logger.info(f"Ergebnisse gespeichert: {results_file}")
         
     except Exception as e:
@@ -356,7 +344,7 @@ def run_test(
                 "full_kpis": kpis
             }
             with open(kpis_file, 'w', encoding='utf-8') as f:
-                json.dump(kpis_data, f, indent=2, ensure_ascii=False)
+                json_dump_safe(kpis_data, f, indent=2, ensure_ascii=False)
             logger.info(f"KPIs gespeichert: {kpis_file}")
             
             return {
@@ -512,7 +500,7 @@ def main():
     summaries_dir.mkdir(parents=True, exist_ok=True)
     validation_file = summaries_dir / f"validation_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
     with open(validation_file, 'w', encoding='utf-8') as f:
-        json.dump(validation_results, f, indent=2, ensure_ascii=False)
+        json_dump_safe(validation_results, f, indent=2, ensure_ascii=False)
     logger.info(f"Validierungsergebnisse gespeichert: {validation_file}")
     
     if not validation_results["valid"]:
@@ -685,16 +673,20 @@ def main():
         }
     }
     with open(summary_file, 'w', encoding='utf-8') as f:
-        json.dump(summary_data, f, indent=2, ensure_ascii=False)
+        json_dump_safe(summary_data, f, indent=2, ensure_ascii=False)
     
     logger.info(f"Zusammenfassung gespeichert: {summary_file}")
     
-    # Cleanup
+    # CRITICAL FIX: Cleanup ThreadPoolExecutor properly (wait=True to ensure all tasks complete)
     try:
-        if hasattr(llm_client, 'timeout_executor'):
-            llm_client.timeout_executor.shutdown(wait=False)
+        if hasattr(llm_client, 'close'):
+            llm_client.close()
+            logger.debug("LLMClient closed successfully")
+        elif hasattr(llm_client, 'timeout_executor'):
+            llm_client.timeout_executor.shutdown(wait=True, cancel_futures=False)
+            logger.debug("ThreadPoolExecutor shut down")
     except Exception as e:
-        logger.debug(f"Fehler beim Cleanup: {e}")
+        logger.warning(f"Fehler beim Cleanup: {e}")
 
 
 if __name__ == "__main__":

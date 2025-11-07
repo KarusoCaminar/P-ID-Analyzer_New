@@ -41,15 +41,26 @@ class TopologyCritic:
         self,
         elements: List[Dict[str, Any]],
         connections: List[Dict[str, Any]],
-        polylines: Optional[List[List[List[float]]]] = None
+        polylines: Optional[List[List[List[float]]]] = None,
+        pipeline_lines: Optional[List[Dict[str, Any]]] = None,
+        image_width: Optional[int] = None,
+        image_height: Optional[int] = None
     ) -> Dict[str, Any]:
         """
         Validate topology and find inconsistencies.
+        
+        CRITICAL: Now includes CV-based line verification (Pattern 4 from Audit).
+        Verifies that LLM-detected connections have actual physical line paths
+        in the CV-extracted pipeline lines.
         
         Args:
             elements: Detected elements
             connections: Detected connections
             polylines: Optional list of polylines for each connection
+            pipeline_lines: Optional list of CV-extracted pipeline lines from line_extractor
+                          Format: [{'polyline': [[x, y], ...], 'start_element': id, 'end_element': id}, ...]
+            image_width: Optional image width (required if pipeline_lines provided)
+            image_height: Optional image height (required if pipeline_lines provided)
             
         Returns:
             Dictionary with validation results:
@@ -58,6 +69,7 @@ class TopologyCritic:
             - broken_paths: Paths that don't connect properly
             - missing_splits: Detected splits without Line_Split elements
             - missing_merges: Detected merges without Line_Merge elements
+            - unverified_connections: Connections without physical CV line verification
             - validation_score: Overall validation score (0-100)
         """
         logger.info("=== Starting topology validation ===")
@@ -77,14 +89,23 @@ class TopologyCritic:
             if polylines:
                 broken_paths = self._validate_polylines(connections, polylines)
             
+            # CRITICAL: CV-based line verification (Pattern 4)
+            unverified_connections = []
+            if pipeline_lines and image_width and image_height:
+                unverified_connections = self._verify_connections_with_cv_lines(
+                    elements, connections, pipeline_lines, image_width, image_height
+                )
+                logger.info(f"CV line verification: {len(unverified_connections)} unverified connections found")
+            
             # Check for missing splits/merges
             missing_splits, missing_merges = self._check_splits_merges(graph, elements)
             
-            # Calculate validation score
+            # Calculate validation score (include unverified connections as issues)
             total_issues = (
                 len(disconnected) +
                 len(invalid_degrees) +
                 len(broken_paths) +
+                len(unverified_connections) +
                 len(missing_splits) +
                 len(missing_merges)
             )
@@ -99,6 +120,7 @@ class TopologyCritic:
                 'disconnected_nodes': disconnected,
                 'invalid_degrees': invalid_degrees,
                 'broken_paths': broken_paths,
+                'unverified_connections': unverified_connections,
                 'missing_splits': missing_splits,
                 'missing_merges': missing_merges,
                 'validation_score': validation_score,
@@ -111,6 +133,7 @@ class TopologyCritic:
                 'disconnected_nodes': [],
                 'invalid_degrees': [],
                 'broken_paths': [],
+                'unverified_connections': [],
                 'missing_splits': [],
                 'missing_merges': [],
                 'validation_score': 0.0,
@@ -335,4 +358,166 @@ class TopologyCritic:
                     })
         
         return missing_splits, missing_merges
+    
+    def _verify_connections_with_cv_lines(
+        self,
+        elements: List[Dict[str, Any]],
+        connections: List[Dict[str, Any]],
+        pipeline_lines: List[Dict[str, Any]],
+        image_width: int,
+        image_height: int
+    ) -> List[Dict[str, Any]]:
+        """
+        Verify LLM-detected connections against CV-extracted pipeline lines.
+        
+        CRITICAL: This is Pattern 4 from the Audit - CV-based connection verification.
+        For each LLM-detected connection, checks if there's an actual physical line
+        path in the CV-extracted pipeline lines that connects the two elements.
+        
+        Args:
+            elements: Detected elements with bboxes
+            connections: LLM-detected connections
+            pipeline_lines: CV-extracted pipeline lines from line_extractor
+                          Format: [{'polyline': [[x, y], ...], 'start_element': id, 'end_element': id}, ...]
+            image_width: Image width
+            image_height: Image height
+            
+        Returns:
+            List of unverified connections (connections without physical CV line paths)
+        """
+        unverified = []
+        
+        # Create element map for quick lookup
+        element_map = {el.get('id'): el for el in elements}
+        
+        # Create CV line map: (from_id, to_id) -> pipeline_line
+        cv_line_map = {}
+        for cv_line in pipeline_lines:
+            start_id = cv_line.get('start_element')
+            end_id = cv_line.get('end_element')
+            if start_id and end_id:
+                cv_line_map[(start_id, end_id)] = cv_line
+        
+        # Verify each LLM connection
+        for conn in connections:
+            from_id = conn.get('from_id')
+            to_id = conn.get('to_id')
+            
+            if not from_id or not to_id:
+                continue
+            
+            # Check if both elements exist
+            from_el = element_map.get(from_id)
+            to_el = element_map.get(to_id)
+            
+            if not from_el or not to_el:
+                # Element missing - this is a different issue, skip CV verification
+                continue
+            
+            # Check if CV line exists for this connection
+            if (from_id, to_id) in cv_line_map:
+                # CV line found - connection is verified
+                continue
+            
+            # Check reverse direction (CV might have detected line in opposite direction)
+            if (to_id, from_id) in cv_line_map:
+                # CV line found in reverse - connection is verified (but might be bidirectional)
+                continue
+            
+            # Check if CV line connects to/from bboxes (more flexible matching)
+            # Sometimes CV detects line segments that are close to element bboxes
+            bbox_match = self._check_bbox_connection(
+                from_el, to_el, pipeline_lines, image_width, image_height
+            )
+            
+            if not bbox_match:
+                # No CV line found - connection is unverified (likely hallucination)
+                unverified.append({
+                    'connection_id': conn.get('id', f"{from_id}->{to_id}"),
+                    'from_id': from_id,
+                    'to_id': to_id,
+                    'from_type': from_el.get('type', 'Unknown'),
+                    'to_type': to_el.get('type', 'Unknown'),
+                    'issue': 'No physical CV line path found for this connection (likely LLM hallucination)',
+                    'confidence': conn.get('confidence', 0.0)
+                })
+        
+        return unverified
+    
+    def _check_bbox_connection(
+        self,
+        from_el: Dict[str, Any],
+        to_el: Dict[str, Any],
+        pipeline_lines: List[Dict[str, Any]],
+        image_width: int,
+        image_height: int,
+        tolerance: float = 0.05  # 5% tolerance for bbox matching
+    ) -> bool:
+        """
+        Check if any CV pipeline line connects the bounding boxes of two elements.
+        
+        This is a more flexible check that doesn't require exact element ID matching.
+        It checks if a CV line segment starts near from_el bbox and ends near to_el bbox.
+        
+        Args:
+            from_el: Source element
+            to_el: Target element
+            pipeline_lines: CV-extracted pipeline lines
+            image_width: Image width
+            image_height: Image height
+            tolerance: Normalized tolerance for bbox matching (default 0.05 = 5%)
+            
+        Returns:
+            True if a connecting line is found, False otherwise
+        """
+        from_bbox = from_el.get('bbox')
+        to_bbox = to_el.get('bbox')
+        
+        if not from_bbox or not to_bbox:
+            return False
+        
+        # Get bbox centers
+        from_center_x = float(from_bbox.get('x', 0)) + float(from_bbox.get('width', 0)) / 2
+        from_center_y = float(from_bbox.get('y', 0)) + float(from_bbox.get('height', 0)) / 2
+        to_center_x = float(to_bbox.get('x', 0)) + float(to_bbox.get('width', 0)) / 2
+        to_center_y = float(to_bbox.get('y', 0)) + float(to_bbox.get('height', 0)) / 2
+        
+        # Check each CV line
+        for cv_line in pipeline_lines:
+            polyline = cv_line.get('polyline', [])
+            if len(polyline) < 2:
+                continue
+            
+            # Get start and end points of CV line
+            start_point = polyline[0]  # Normalized [x, y]
+            end_point = polyline[-1]   # Normalized [x, y]
+            
+            # Calculate distances from element centers to line endpoints
+            dist_from_start = np.sqrt(
+                (start_point[0] - from_center_x)**2 + 
+                (start_point[1] - from_center_y)**2
+            )
+            dist_from_end = np.sqrt(
+                (end_point[0] - to_center_x)**2 + 
+                (end_point[1] - to_center_y)**2
+            )
+            
+            # Check if line connects from_el to to_el (within tolerance)
+            if dist_from_start <= tolerance and dist_from_end <= tolerance:
+                return True
+            
+            # Check reverse direction (line might go from to_el to from_el)
+            dist_reverse_start = np.sqrt(
+                (start_point[0] - to_center_x)**2 + 
+                (start_point[1] - to_center_y)**2
+            )
+            dist_reverse_end = np.sqrt(
+                (end_point[0] - from_center_x)**2 + 
+                (end_point[1] - from_center_y)**2
+            )
+            
+            if dist_reverse_start <= tolerance and dist_reverse_end <= tolerance:
+                return True
+        
+        return False
 

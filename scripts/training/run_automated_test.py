@@ -297,36 +297,50 @@ def main():
         print("[FAIL] Backend initialization failed!")
         return 1
     
-    # Step 4: Run analysis
-    result = run_analysis(coordinator, test_image)
-    if not result:
-        print("[FAIL] Analysis failed!")
-        return 1
-    
-    # Step 5: Validate results
-    validation_passed = validate_results(result)
-    
-    print("=" * 60)
-    print("Test Summary")
-    print("=" * 60)
-    print(f"[OK] Environment: Passed")
-    print(f"[OK] Backend Init: Passed")
-    print(f"[OK] Analysis: Passed")
-    print(f"{'[OK]' if validation_passed else '[WARN]'} Validation: {'Passed' if validation_passed else 'Partial'}")
-    print()
-    
-    if validation_passed:
-        print("[SUCCESS] Automated test completed successfully!")
+    # CRITICAL FIX: Ensure cleanup happens
+    try:
+        # Step 4: Run analysis
+        result = run_analysis(coordinator, test_image)
+        if not result:
+            print("[FAIL] Analysis failed!")
+            return 1
+        
+        # Step 5: Validate results
+        validation_passed = validate_results(result)
+        
+        print("=" * 60)
+        print("Test Summary")
+        print("=" * 60)
+        print(f"[OK] Environment: Passed")
+        print(f"[OK] Backend Init: Passed")
+        print(f"[OK] Analysis: Passed")
+        print(f"{'[OK]' if validation_passed else '[WARN]'} Validation: {'Passed' if validation_passed else 'Partial'}")
         print()
-        print("Results saved to output directory")
-        print("You can now test with your own images:")
-        print("  python run_cli.py path/to/image.png")
-        print("  python run_gui.py")
-        return 0
-    else:
-        print("[WARN] Test completed with warnings")
-        print("       Check output for details")
-        return 0  # Still success, just warnings
+        
+        if validation_passed:
+            print("[SUCCESS] Automated test completed successfully!")
+            print()
+            print("Results saved to output directory")
+            print("You can now test with your own images:")
+            print("  python run_cli.py path/to/image.png")
+            print("  python run_gui.py")
+            return 0
+        else:
+            print("[WARN] Test completed with warnings")
+            print("       Check output for details")
+            return 0  # Still success, just warnings
+    finally:
+        # CRITICAL FIX: Cleanup ThreadPoolExecutor to prevent resource leaks
+        if coordinator and hasattr(coordinator, 'llm_client') and coordinator.llm_client:
+            try:
+                if hasattr(coordinator.llm_client, 'close'):
+                    coordinator.llm_client.close()
+                    print("[OK] LLMClient closed successfully")
+                elif hasattr(coordinator.llm_client, 'timeout_executor'):
+                    coordinator.llm_client.timeout_executor.shutdown(wait=True, cancel_futures=False)
+                    print("[OK] ThreadPoolExecutor shut down")
+            except Exception as e:
+                print(f"[WARN] Error during cleanup: {e}")
 
 if __name__ == "__main__":
     try:

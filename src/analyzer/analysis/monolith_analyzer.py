@@ -223,9 +223,18 @@ class MonolithAnalyzer(IAnalyzer):
         # Get element_list_json from instance attribute (set by pipeline_coordinator)
         element_list_json = getattr(self, 'element_list_json', '[]')
         
+        # CRITICAL FIX: Parse JSON first to check for emptiness, avoiding fragile string comparison
+        # This prevents breakage if JSON formatting changes (whitespace, etc.)
+        try:
+            import json
+            elements_list = json.loads(element_list_json) if element_list_json else []
+        except (json.JSONDecodeError, TypeError):
+            # If parsing fails, treat as empty list
+            elements_list = []
+        
         # CRITICAL: For simple P&IDs, if element_list_json is empty, Monolith should recognize elements AND connections
         # Use different prompt template if element_list_json is empty (simple P&ID mode)
-        if element_list_json == "[]" or element_list_json.strip() == "[]":
+        if not elements_list:
             # Simple P&ID mode: Monolith recognizes elements AND connections independently
             logger.info("CRITICAL: element_list_json is empty - Monolith will recognize elements AND connections independently")
             # Use a modified prompt that allows element detection
@@ -253,7 +262,7 @@ class MonolithAnalyzer(IAnalyzer):
             ).replace(
                 "[{component_list_str}]", f"[{component_list_str}]"
             ).replace(
-                "{element_list_json}", ""  # Empty - Monolith recognizes elements itself
+                "{element_list_json}", "[]"  # Empty - Monolith recognizes elements itself
             ).replace(
                 "{legend_context}", legend_context_str
             ).replace(
@@ -302,7 +311,7 @@ class MonolithAnalyzer(IAnalyzer):
                 ).replace(
                     "[{component_list_str}]", f"[{component_list_str}]"
                 ).replace(
-                    "{element_list_json}", element_list_json  # Use provided element list
+                    "{element_list_json}", json.dumps(elements_list, ensure_ascii=False) if elements_list else "[]"  # Use provided element list
                 ).replace(
                     "{legend_context}", legend_context_str
                 ).replace(
@@ -329,7 +338,7 @@ class MonolithAnalyzer(IAnalyzer):
                 ).replace(
                     "[{component_list_str}]", f"[{component_list_str}]"
                 ).replace(
-                    "{element_list_json}", element_list_json  # Use provided element list
+                    "{element_list_json}", json.dumps(elements_list, ensure_ascii=False) if elements_list else "[]"  # Use provided element list
                 ).replace(
                     "{legend_context}", legend_context_str
                 ).replace(
@@ -532,9 +541,17 @@ class MonolithAnalyzer(IAnalyzer):
             # Get element_list_json from instance attribute (set by pipeline_coordinator)
             element_list_json = getattr(self, 'element_list_json', '[]')
             
+            # CRITICAL FIX: Parse JSON first to check for emptiness, avoiding fragile string comparison
+            # This prevents breakage if JSON formatting changes (whitespace, etc.)
+            try:
+                elements_list = json.loads(element_list_json) if element_list_json else []
+            except (json.JSONDecodeError, TypeError):
+                # If parsing fails, treat as empty list
+                elements_list = []
+            
             # CRITICAL: For simple P&IDs, if element_list_json is empty, Monolith should recognize elements AND connections
             # Use different prompt template if element_list_json is empty (simple P&ID mode)
-            if element_list_json == "[]" or element_list_json.strip() == "[]":
+            if not elements_list:
                 # Simple P&ID mode: Monolith recognizes elements AND connections independently
                 logger.info("CRITICAL: element_list_json is empty - Monolith will recognize elements AND connections independently")
                 # Use a modified prompt that allows element detection

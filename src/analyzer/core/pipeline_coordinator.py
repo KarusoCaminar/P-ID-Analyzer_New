@@ -1638,12 +1638,58 @@ Be honest and strict in your evaluation."""
         
         logger.info(f"Polyline extraction complete: {len(polyline_results)} polylines extracted.")
         
+        # CRITICAL: CV-based line extraction for connection verification (Pattern 4)
+        # Extract pipeline lines using CV (skeletonization) for verification
+        logger.info("Extracting pipeline lines with CV for connection verification...")
+        try:
+            from src.analyzer.analysis.line_extractor import LineExtractor
+            from PIL import Image
+            
+            # Get image dimensions
+            img = Image.open(self.current_image_path)
+            img_width, img_height = img.size
+            
+            # Get legend data and excluded zones
+            legend_data = self._analysis_results.get('legend_data', {})
+            excluded_zones = self._excluded_zones.copy()
+            
+            # Initialize line extractor
+            config_dict = self.config_service.get_config().model_dump() if hasattr(self.config_service.get_config(), 'model_dump') else self.config_service.get_raw_config()
+            line_extractor = LineExtractor(config_dict)
+            
+            # Extract pipeline lines using CV
+            cv_line_result = line_extractor.extract_pipeline_lines(
+                image_path=self.current_image_path,
+                elements=elements,
+                excluded_zones=excluded_zones,
+                legend_data=legend_data
+            )
+            
+            # Store CV-extracted pipeline lines for TopologyCritic verification
+            pipeline_lines = cv_line_result.get('pipeline_lines', [])
+            self._analysis_results['pipeline_lines'] = pipeline_lines
+            self._analysis_results['cv_line_extraction'] = {
+                'pipeline_lines': pipeline_lines,
+                'junctions': cv_line_result.get('junctions', []),
+                'line_segments': cv_line_result.get('line_segments', []),
+                'image_width': img_width,
+                'image_height': img_height
+            }
+            
+            logger.info(f"CV line extraction complete: {len(pipeline_lines)} pipeline lines extracted for verification")
+        except Exception as e:
+            logger.warning(f"CV line extraction failed: {e}. Continuing without CV verification.", exc_info=True)
+            # Don't fail the entire phase if CV extraction fails
+            self._analysis_results['pipeline_lines'] = []
+            self._analysis_results['cv_line_extraction'] = None
+        
         # TEST HARNESS: Save intermediate result after polyline refinement
         if hasattr(self, 'current_output_dir'):
             from src.utils.test_harness import save_intermediate_result
             polyline_result = {
                 "elements": self._analysis_results.get("elements", []),
-                "connections": updated_connections
+                "connections": updated_connections,
+                "pipeline_lines": self._analysis_results.get('pipeline_lines', [])
             }
             save_intermediate_result("phase_2e_polyline", polyline_result, self.current_output_dir)
     
@@ -1926,13 +1972,60 @@ Be honest and strict in your evaluation."""
         
         Validates analysis results and generates error feedback with confidence scores.
         
+        CRITICAL: Now includes CV-based line verification (Pattern 4 from Audit).
+        Verifies LLM-detected connections against CV-extracted pipeline lines.
+        
         Returns:
             Tuple of (quality_score, errors_dict)
         """
         from src.analyzer.evaluation.kpi_calculator import KPICalculator
+        from src.analyzer.analysis.topology_critic import TopologyCritic
         
         elements = self._analysis_results.get("elements", [])
         connections = self._analysis_results.get("connections", [])
+        
+        # CRITICAL: CV-based topology validation (Pattern 4)
+        # Verify connections against CV-extracted pipeline lines
+        topology_validation = {}
+        try:
+            # Get CV line extraction results
+            cv_line_extraction = self._analysis_results.get('cv_line_extraction')
+            pipeline_lines = self._analysis_results.get('pipeline_lines', [])
+            
+            if cv_line_extraction and pipeline_lines:
+                # Initialize TopologyCritic
+                config_dict = self.config_service.get_config().model_dump() if hasattr(self.config_service.get_config(), 'model_dump') else self.config_service.get_raw_config()
+                topology_critic = TopologyCritic(config_dict)
+                
+                # Get image dimensions from CV extraction result
+                image_width = cv_line_extraction.get('image_width')
+                image_height = cv_line_extraction.get('image_height')
+                
+                # Validate topology with CV line verification
+                topology_validation = topology_critic.validate_topology(
+                    elements=elements,
+                    connections=connections,
+                    polylines=None,  # Polylines are already in connections
+                    pipeline_lines=pipeline_lines,
+                    image_width=image_width,
+                    image_height=image_height
+                )
+                
+                # Log unverified connections (likely hallucinations)
+                unverified_connections = topology_validation.get('unverified_connections', [])
+                if unverified_connections:
+                    logger.warning(f"CV line verification: {len(unverified_connections)} connections without physical CV line paths (likely hallucinations)")
+                    for unverified in unverified_connections[:5]:  # Log first 5
+                        logger.debug(f"  Unverified connection: {unverified.get('from_id')} -> {unverified.get('to_id')} "
+                                    f"(confidence: {unverified.get('confidence', 0.0):.2f})")
+                
+                # Store topology validation results
+                self._analysis_results['topology_validation'] = topology_validation
+            else:
+                logger.debug("CV line extraction not available - skipping CV-based topology verification")
+        except Exception as e:
+            logger.warning(f"Topology validation with CV verification failed: {e}. Continuing without CV verification.", exc_info=True)
+            # Don't fail the entire phase if topology validation fails
         
         # Calculate comprehensive KPIs
         kpi_calculator = KPICalculator()
@@ -2015,6 +2108,10 @@ Be honest and strict in your evaluation."""
                 if el_id and el_id not in analysis_ids_set:
                     missed_els.append(el)
         
+        # CRITICAL: Add CV-verified connection errors (Pattern 4)
+        # Unverified connections from TopologyCritic (connections without physical CV line paths)
+        unverified_connections = topology_validation.get('unverified_connections', []) if topology_validation else []
+        
         # Add metacritic discrepancies to errors if available
         metacritic_discrepancies = self._analysis_results.get('metacritic_discrepancies', [])
         
@@ -2023,12 +2120,14 @@ Be honest and strict in your evaluation."""
             'hallucinated_elements': hallucinated_els,  # List of actual elements
             'missed_connections': kpis.get('missed_connections', 0),
             'hallucinated_connections': kpis.get('hallucinated_connections', 0),
+            'unverified_connections': unverified_connections,  # CRITICAL: CV-verified connection errors (Pattern 4)
             'low_confidence_elements': [
                 el.get('id') for el in elements
                 if el.get('confidence', 1.0) < 0.5
             ],
             'isolated_elements': kpis.get('isolated_elements', 0),
-            'metacritic_discrepancies': metacritic_discrepancies  # Add metacritic issues
+            'metacritic_discrepancies': metacritic_discrepancies,  # Add metacritic issues
+            'topology_validation': topology_validation  # Store full topology validation results
         }
         
         # Store KPIs for later use
@@ -2210,126 +2309,26 @@ Be honest and strict in your evaluation."""
         elements_data = final_ai_data.get("elements", [])
         connections_data = final_ai_data.get("connections", [])
         
-        # Post-Processing: Filter low-confidence elements and hallucinations
-        confidence_threshold = self.active_logic_parameters.get('confidence_threshold', 0.7)
-        logger.info(f"Post-processing: Filtering elements with confidence < {confidence_threshold}")
+        # CRITICAL: Use NormalizationEngine for validation and normalization (extracted from Phase 4)
+        from src.analyzer.analysis.normalization_engine import NormalizationEngine
         
-        filtered_elements = []
-        filtered_elements_ids = set()
-        removed_count = 0
+        config_dict = self.config_service.get_config().model_dump() if hasattr(self.config_service.get_config(), 'model_dump') else self.config_service.get_raw_config()
+        normalization_engine = NormalizationEngine(config_dict)
         
-        for el in elements_data:
-            el_dict = el if isinstance(el, dict) else el.model_dump() if hasattr(el, 'model_dump') else el.__dict__ if hasattr(el, '__dict__') else {}
-            confidence = el_dict.get('confidence', 0.5)
-            
-            if confidence >= confidence_threshold:
-                filtered_elements.append(el)
-                el_id = el_dict.get('id')
-                if el_id:
-                    filtered_elements_ids.add(el_id)
-            else:
-                removed_count += 1
-                logger.debug(f"Removed low-confidence element: {el_dict.get('id', 'unknown')} (confidence: {confidence:.2f} < {confidence_threshold})")
+        # Process elements and connections through normalization engine
+        elements_models, connections_models, normalization_stats = normalization_engine.process(
+            elements_data, connections_data
+        )
         
-        if removed_count > 0:
-            logger.info(f"Post-processing: Removed {removed_count} low-confidence elements (confidence < {confidence_threshold})")
+        logger.info(f"Post-processing complete: {len(elements_models)} elements, {len(connections_models)} connections (after normalization)")
         
-        # Filter connections: Only keep connections between filtered elements
-        filtered_connections = []
-        removed_conn_count = 0
+        # Log normalization statistics
+        if normalization_stats.get('removed_elements', 0) > 0 or normalization_stats.get('removed_connections', 0) > 0:
+            logger.info(f"Normalization stats: {normalization_stats}")
         
-        for conn in connections_data:
-            conn_dict = conn if isinstance(conn, dict) else conn.model_dump() if hasattr(conn, 'model_dump') else conn.__dict__ if hasattr(conn, '__dict__') else {}
-            from_id = conn_dict.get('from_id')
-            to_id = conn_dict.get('to_id')
-            conn_confidence = conn_dict.get('confidence', 0.5)
-            
-            # Keep connection if both elements exist AND connection has sufficient confidence
-            if from_id in filtered_elements_ids and to_id in filtered_elements_ids and conn_confidence >= confidence_threshold:
-                filtered_connections.append(conn)
-            else:
-                removed_conn_count += 1
-                logger.debug(f"Removed connection: {from_id} -> {to_id} (missing elements or low confidence: {conn_confidence:.2f})")
-        
-        if removed_conn_count > 0:
-            logger.info(f"Post-processing: Removed {removed_conn_count} connections (missing elements or confidence < {confidence_threshold})")
-        
-        # Update data with filtered results
-        elements_data = filtered_elements
-        connections_data = filtered_connections
-        logger.info(f"Post-processing complete: {len(elements_data)} elements, {len(connections_data)} connections (after filtering)")
-        
-        # Ensure elements are Element objects (AnalysisResult expects List[Element])
-        elements_models = []
-        for el in elements_data:
-            if isinstance(el, Element):
-                # Validate existing Element
-                if el.bbox.width > 0 and el.bbox.height > 0:
-                    elements_models.append(el)
-                else:
-                    logger.warning(f"Skipping element {el.id}: Invalid bbox (width={el.bbox.width}, height={el.bbox.height})")
-                    continue
-            elif isinstance(el, dict):
-                try:
-                    # CRITICAL FIX 2: VALIDATE instead of REPAIR - reject invalid bboxes
-                    if 'bbox' not in el or not isinstance(el['bbox'], dict):
-                        logger.warning(f"Skipping element {el.get('id', 'unknown')}: Missing or invalid bbox structure")
-                        continue
-                    
-                    bbox = el['bbox']
-                    element_id = el.get('id', 'unknown')
-                    
-                    # STRICT VALIDATION: BBox must have valid, positive dimensions
-                    from src.utils.type_utils import is_valid_bbox
-                    if not is_valid_bbox(bbox) or bbox.get('width', 0) <= 0 or bbox.get('height', 0) <= 0:
-                        logger.warning(
-                            f"REJECTING element {element_id}: Invalid bbox dimensions "
-                            f"(width={bbox.get('width')}, height={bbox.get('height')}). "
-                            f"Element is likely a hallucination."
-                        )
-                        continue  # Element is rejected, not repaired
-                    
-                    # BBox must be within bounds (0.0 - 1.0)
-                    # CRITICAL FIX: Convert to float before arithmetic operations
-                    bbox['x'] = max(0.0, min(1.0, float(bbox.get('x', 0.0))))
-                    bbox['y'] = max(0.0, min(1.0, float(bbox.get('y', 0.0))))
-                    bbox['width'] = max(0.001, min(1.0 - float(bbox.get('x', 0.0)), float(bbox.get('width', 0.001))))
-                    bbox['height'] = max(0.001, min(1.0 - float(bbox.get('y', 0.0)), float(bbox.get('height', 0.001))))
-                    
-                    # Create BBox Pydantic model
-                    from src.analyzer.models.elements import BBox
-                    el['bbox'] = BBox(**bbox)
-                    
-                    # Ensure label is not None (required by Pydantic)
-                    if 'label' not in el or el.get('label') is None:
-                        el['label'] = el.get('type', 'Unknown') or 'Unknown'
-                        logger.debug(f"Element {el.get('id', 'unknown')}: Set label to '{el['label']}' (was None)")
-                    
-                    # Final confidence check before adding (defensive programming)
-                    confidence = el.get('confidence', 0.5)
-                    if confidence >= confidence_threshold:
-                        elements_models.append(Element(**el))
-                    else:
-                        logger.debug(f"Skipping element {el.get('id', 'unknown')} in final conversion: confidence {confidence:.2f} < {confidence_threshold}")
-                except Exception as e:
-                    logger.warning(f"Could not convert element dict to Element model: {e}")
-                    continue
-            else:
-                logger.warning(f"Unexpected element type: {type(el)}")
-        
-        # Ensure connections are Connection objects (AnalysisResult expects List[Connection])
-        connections_models = []
-        for conn in connections_data:
-            if isinstance(conn, Connection):
-                connections_models.append(conn)
-            elif isinstance(conn, dict):
-                try:
-                    connections_models.append(Connection(**conn))
-                except Exception as e:
-                    logger.warning(f"Could not convert connection dict to Connection model: {e}")
-                    continue
-            else:
-                logger.warning(f"Unexpected connection type: {type(conn)}")
+        # Update data with normalized results (already Pydantic models from NormalizationEngine)
+        elements_data = elements_models
+        connections_data = connections_models
         
         # Prepare complete legend data for output
         complete_legend_data = self._analysis_results.get('legend_data', {})

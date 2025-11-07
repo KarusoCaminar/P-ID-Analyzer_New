@@ -168,28 +168,37 @@ def main():
         logger.info(f"Using model strategy: default")
         
         # Run analysis
-        result = coordinator.process(
-            image_path=str(image_path),
-            output_dir=args.output_dir,
-            params_override=None
-        )
-        
-        # Print results summary
-        logger.info("=" * 60)
-        logger.info("Analysis Complete!")
-        logger.info("=" * 60)
-        logger.info(f"Image: {result.image_name}")
-        logger.info(f"Elements detected: {len(result.elements)}")
-        logger.info(f"Connections detected: {len(result.connections)}")
-        logger.info(f"Quality score: {result.quality_score:.2f}")
-        
-        if result.kpis:
-            logger.info("KPIs:")
-            for key, value in result.kpis.items():
-                logger.info(f"  {key}: {value}")
-        
-        logger.info(f"Results saved to: {args.output_dir or 'outputs'}")
-        logger.info("=" * 60)
+        try:
+            result = coordinator.process(
+                image_path=str(image_path),
+                output_dir=args.output_dir,
+                params_override=None
+            )
+            
+            # Print results summary
+            logger.info("=" * 60)
+            logger.info("Analysis Complete!")
+            logger.info("=" * 60)
+            logger.info(f"Image: {result.image_name}")
+            logger.info(f"Elements detected: {len(result.elements)}")
+            logger.info(f"Connections detected: {len(result.connections)}")
+            logger.info(f"Quality score: {result.quality_score:.2f}")
+            
+            if result.kpis:
+                logger.info("KPIs:")
+                for key, value in result.kpis.items():
+                    logger.info(f"  {key}: {value}")
+            
+            logger.info(f"Results saved to: {args.output_dir or 'outputs'}")
+            logger.info("=" * 60)
+        finally:
+            # CRITICAL FIX: Shutdown ThreadPoolExecutor to prevent resource leak
+            if llm_client and hasattr(llm_client, 'close'):
+                try:
+                    llm_client.close()
+                    logger.debug("LLMClient closed successfully")
+                except Exception as e:
+                    logger.warning(f"Error closing LLMClient: {e}")
         
     except Exception as e:
         logger.error(f"Error during analysis: {e}", exc_info=True)

@@ -297,12 +297,15 @@ class KnowledgeManager:
     
     def add_type_alias(self, canonical_type: str, alias: str) -> None:
         """Add a type alias."""
-        aliases = self.learning_database.setdefault("knowledge_extensions", {}).setdefault("type_aliases", {})
-        if canonical_type not in aliases:
-            aliases[canonical_type] = []
-        if alias not in aliases[canonical_type]:
-            aliases[canonical_type].append(alias)
-            self.save_learning_database()
+        # CRITICAL FIX: Thread-safe write access (Pattern 1)
+        with self.db_process_lock:
+            with self.db_thread_lock:
+                aliases = self.learning_database.setdefault("knowledge_extensions", {}).setdefault("type_aliases", {})
+                if canonical_type not in aliases:
+                    aliases[canonical_type] = []
+                if alias not in aliases[canonical_type]:
+                    aliases[canonical_type].append(alias)
+                    self.save_learning_database()
     
     def _normalize_label(self, label: str) -> str:
         """Normalize label for matching."""
@@ -638,9 +641,93 @@ class KnowledgeManager:
         except Exception as e:
             logger.error(f"Error tracking critical errors: {e}", exc_info=True)
     
+    def add_correction(
+        self,
+        problem: Dict[str, Any],
+        correction: Dict[str, Any],
+        image_name: Optional[str] = None
+    ) -> str:
+        """
+        Add a single correction to the learning database.
+        
+        NOTE: For multiple corrections, use bulk_add_corrections() to avoid
+        rebuilding the vector index multiple times.
+        
+        Args:
+            problem: Problem description dictionary
+            correction: Correction data dictionary
+            image_name: Optional image name for reference
+            
+        Returns:
+            Hash ID of the stored correction
+        """
+        return self.bulk_add_corrections([(problem, correction, image_name)])[0]
+    
+    def bulk_add_corrections(
+        self,
+        corrections: List[Tuple[Dict[str, Any], Dict[str, Any], Optional[str]]]
+    ) -> List[str]:
+        """
+        Add multiple corrections to the learning database efficiently.
+        
+        CRITICAL FIX: This method adds all corrections without rebuilding
+        the vector index until the end, preventing O(n) rebuilds in loops.
+        
+        Pattern 3: Separates DB writes from index building for performance.
+        
+        Args:
+            corrections: List of tuples (problem, correction, image_name)
+            
+        Returns:
+            List of hash IDs for the stored corrections
+        """
+        if not corrections:
+            return []
+        
+        # CRITICAL FIX: Thread-safe write access (Pattern 1)
+        with self.db_process_lock:
+            with self.db_thread_lock:
+                try:
+                    learned_visual_corrections = self.learning_database.setdefault("learned_visual_corrections", {})
+                    correction_ids = []
+                    
+                    # Pattern 3: Add all corrections to DB first (fast)
+                    for problem, correction, image_name in corrections:
+                        # Generate hash from problem description
+                        problem_str = json.dumps(problem, sort_keys=True)
+                        correction_hash = hashlib.sha256(problem_str.encode()).hexdigest()[:16]
+                        
+                        # Store correction
+                        learned_visual_corrections[correction_hash] = {
+                            'problem': problem,
+                            'correction': correction,
+                            'image_name': image_name,
+                            'learned_timestamp': datetime.now().isoformat(),
+                            'usage_count': 0
+                        }
+                        correction_ids.append(correction_hash)
+                    
+                    # Pattern 3: Save database (with locks already acquired)
+                    self.save_learning_database()
+                    
+                    logger.info(f"Added {len(correction_ids)} corrections to learning database")
+                    
+                except Exception as e:
+                    logger.error(f"Error adding corrections: {e}", exc_info=True)
+                    return []
+        
+        # Pattern 3: Rebuild vector index AFTER releasing locks (slow operation)
+        # This prevents holding locks during expensive index building
+        try:
+            self._build_vector_index()
+        except Exception as e:
+            logger.warning(f"Error rebuilding vector index after adding corrections: {e}")
+            # Don't fail the entire operation if index rebuild fails
+        
+        return correction_ids if 'correction_ids' in locals() else []
+    
     # Additional methods from original knowledge_bases.py can be migrated here
     # For brevity, I'm including the core structure. Full migration would include:
-    # - learn_from_correction
     # - find_solution_for_problem
     # - integrate_symbol_library
     # - add_learning_pattern

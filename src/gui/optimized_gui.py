@@ -1898,6 +1898,14 @@ Weitere Informationen:
         except Exception as e:
             logger.error(f"Error during GUI cleanup: {e}", exc_info=True)
         finally:
+            # CRITICAL FIX: Shutdown ThreadPoolExecutor to prevent resource leak
+            if hasattr(self, 'llm_client') and self.llm_client:
+                try:
+                    if hasattr(self.llm_client, 'close'):
+                        self.llm_client.close()
+                        logger.debug("LLMClient closed successfully")
+                except Exception as e:
+                    logger.warning(f"Error closing LLMClient: {e}")
             # Destroy the window
             self.destroy()
 
@@ -1913,6 +1921,7 @@ def main():
         datefmt='%Y-%m-%d %H:%M:%S'
     )
     
+    app = None
     try:
         app = OptimizedGUI()
         app.mainloop()
@@ -1921,6 +1930,14 @@ def main():
         messagebox.showerror("Fatal Error", f"Failed to start GUI: {e}")
         import sys
         sys.exit(1)
+    finally:
+        # CRITICAL FIX: Ensure cleanup happens even if mainloop() raises exception
+        if app and hasattr(app, 'llm_client') and app.llm_client:
+            try:
+                if hasattr(app.llm_client, 'close'):
+                    app.llm_client.close()
+            except Exception:
+                pass  # Ignore errors during cleanup
 
 
 if __name__ == "__main__":
