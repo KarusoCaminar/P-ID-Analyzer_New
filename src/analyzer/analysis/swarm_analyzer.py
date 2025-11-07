@@ -763,12 +763,12 @@ class SwarmAnalyzer(IAnalyzer):
         # CRITICAL FIX: Use swarm_specialist_prompt_template if available and simple_pid_strategy is active
         use_specialist_prompt = False
         if isinstance(self.prompts, dict):
-            raster_prompt_template = self.prompts.get('raster_analysis_user_prompt_template')
+            swarm_prompt_template = self.prompts.get('swarm_analysis_user_prompt_template')
             swarm_specialist_prompt = self.prompts.get('swarm_specialist_prompt_template')
             system_prompt = self.prompts.get('general_system_prompt')
         else:
             # PromptsConfig Pydantic model - use attribute access
-            raster_prompt_template = getattr(self.prompts, 'raster_analysis_user_prompt_template', None)
+            swarm_prompt_template = getattr(self.prompts, 'swarm_analysis_user_prompt_template', None)
             swarm_specialist_prompt = getattr(self.prompts, 'swarm_specialist_prompt_template', None)
             system_prompt = getattr(self.prompts, 'general_system_prompt', None) or 'You are an expert in analyzing technical diagrams.'
         
@@ -778,13 +778,13 @@ class SwarmAnalyzer(IAnalyzer):
             swarm_model = self.model_strategy.get('swarm_model') or self.model_strategy.get('detail_model')
             if swarm_model and ('Flash-Lite' in str(swarm_model) or 'simple_pid_strategy' in str(self.logic_parameters.get('strategy', '')).lower()):
                 use_specialist_prompt = True
-                raster_prompt_template = swarm_specialist_prompt
+                swarm_prompt_template = swarm_specialist_prompt
                 logger.info("Using Swarm Specialist Prompt (focused on SamplePoint & ISA-Supply)")
         # IMPROVED: Prefer swarm_model, fallback to detail_model
         swarm_model = self.model_strategy.get('swarm_model') or self.model_strategy.get('detail_model')
         detail_model_info = swarm_model
         
-        if not all([raster_prompt_template, system_prompt, detail_model_info]):
+        if not all([swarm_prompt_template, system_prompt, detail_model_info]):
             logger.error("Configuration for detail analysis incomplete. Aborting swarm analysis.")
             return []
         
@@ -868,7 +868,7 @@ class SwarmAnalyzer(IAnalyzer):
                 viewshot_context = self._load_viewshot_examples()
                 
                 # Build prompt with symbol hints and viewshots
-                optimized_prompt = raster_prompt_template.replace(
+                optimized_prompt = swarm_prompt_template.replace(
                     "{known_types_json}", known_types_json
                 ).replace(
                     "{few_shot_prompt_part}", few_shot_prompt_part

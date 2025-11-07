@@ -324,17 +324,38 @@ class Visualizer:
         """
         fig = None
         try:
+            # CRITICAL FIX: Handle empty or single-value score_history
+            if not score_history or len(score_history) == 0:
+                logger.warning("Empty score_history provided. Cannot plot score curve.")
+                return False
+            
+            # If only one score, create a proper plot with iteration index
+            if len(score_history) == 1:
+                logger.warning(f"Only one score in history: {score_history[0]}. Plotting single point.")
+                # Create iteration indices [0] for single point
+                iterations = [0]
+                scores = score_history
+            else:
+                # Normal case: multiple scores
+                iterations = list(range(len(score_history)))
+                scores = score_history
+            
             fig = plt.figure(figsize=(10, 6))
-            plt.plot(score_history, marker='o', linewidth=2, markersize=8)
+            plt.plot(iterations, scores, marker='o', linewidth=2, markersize=8)
             plt.xlabel('Iteration', fontsize=12)
             plt.ylabel('Quality Score', fontsize=12)
             plt.title('Quality Score Improvement Over Iterations', fontsize=14, fontweight='bold')
             plt.grid(True, alpha=0.3)
             plt.ylim([0, 100])
+            
+            # Add annotations for each point
+            for i, score in zip(iterations, scores):
+                plt.annotate(f'{score:.1f}', (i, score), textcoords="offset points", xytext=(0,10), ha='center')
+            
             plt.tight_layout()
             plt.savefig(output_path, dpi=150, bbox_inches='tight')
             
-            logger.info(f"Score curve saved to: {output_path}")
+            logger.info(f"Score curve saved to: {output_path} ({len(score_history)} iterations)")
             return True
         except Exception as e:
             logger.error(f"Error plotting score curve: {e}", exc_info=True)

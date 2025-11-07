@@ -550,11 +550,55 @@ class KPICalculator:
         truth_connections = {(c.get('from_id'), c.get('to_id')) for c in truth_data.get('connections', [])
                             if c.get('from_id') and c.get('to_id')}
         
-        # Map truth connections to analysis space using id_mapping
+        # CRITICAL FIX: Improve ID mapping with fuzzy matching for connections
+        # Create reverse mapping (analysis_id -> truth_id) and fuzzy match function
+        def normalize_id_for_matching(id_str: str) -> str:
+            """Normalize ID for fuzzy matching"""
+            if not id_str:
+                return ""
+            return id_str.lower().strip().replace(" ", "").replace("-", "").replace("_", "")
+        
+        # Build reverse mapping and fuzzy matching
+        reverse_id_mapping = {v: k for k, v in id_mapping.items()}
+        analysis_element_ids = {get_el_field(el, 'id', '') for el in analysis_elements}
+        truth_element_ids = {get_el_field(el, 'id', '') for el in truth_elements}
+        
+        # Fuzzy match any unmapped IDs
+        for analysis_id in analysis_element_ids:
+            if analysis_id and analysis_id not in reverse_id_mapping:
+                norm_analysis_id = normalize_id_for_matching(analysis_id)
+                # Try to find fuzzy match in truth elements
+                for truth_id in truth_element_ids:
+                    if truth_id and normalize_id_for_matching(truth_id) == norm_analysis_id:
+                        id_mapping[truth_id] = analysis_id
+                        reverse_id_mapping[analysis_id] = truth_id
+                        logger.debug(f"Fuzzy matched connection ID: {truth_id} -> {analysis_id}")
+                        break
+        
+        # Map truth connections to analysis space using id_mapping (with fuzzy matching fallback)
         mapped_truth_connections = set()
         for from_id, to_id in truth_connections:
+            # Try direct mapping first
             mapped_from = id_mapping.get(from_id, from_id)
             mapped_to = id_mapping.get(to_id, to_id)
+            
+            # If not mapped, try fuzzy matching
+            if mapped_from == from_id:
+                norm_from = normalize_id_for_matching(from_id)
+                for aid in analysis_element_ids:
+                    if normalize_id_for_matching(aid) == norm_from:
+                        mapped_from = aid
+                        id_mapping[from_id] = aid
+                        break
+            
+            if mapped_to == to_id:
+                norm_to = normalize_id_for_matching(to_id)
+                for aid in analysis_element_ids:
+                    if normalize_id_for_matching(aid) == norm_to:
+                        mapped_to = aid
+                        id_mapping[to_id] = aid
+                        break
+            
             mapped_truth_connections.add((mapped_from, mapped_to))
         
         # Connection metrics

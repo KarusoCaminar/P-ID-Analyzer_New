@@ -709,15 +709,17 @@ class LineExtractor:
         # Calculate image diagonal (approximate scale)
         diagonal = np.sqrt(img_width ** 2 + img_height ** 2)
         
-        # Base threshold: 0.5% of diagonal
+        # Base threshold: 2% of diagonal (INCREASED from 0.5% to bridge mask gap)
         # This scales with image size:
-        # - Small image (1000px): ~7px threshold
-        # - Medium image (4000px): ~28px threshold
-        # - Large image (8000px): ~56px threshold
-        adaptive_threshold = diagonal * 0.005
+        # - Small image (1000px): ~28px threshold
+        # - Medium image (4000px): ~112px threshold
+        # - Large image (8000px): ~224px threshold (clamped to 150px)
+        # CRITICAL FIX: Increased to bridge the gap created by _mask_symbols margin
+        adaptive_threshold = diagonal * 0.02
         
-        # Clamp to reasonable range (min 10px, max 100px)
-        adaptive_threshold = max(10, min(100, adaptive_threshold))
+        # Clamp to reasonable range (min 25px to exceed mask margin, max 150px)
+        # CRITICAL FIX: Increased min from 10px to 25px to ensure mask gap is bridged
+        adaptive_threshold = max(25, min(150, adaptive_threshold))
         
         logger.debug(f"Adaptive threshold: {adaptive_threshold:.1f}px (image: {img_width}x{img_height})")
         return adaptive_threshold

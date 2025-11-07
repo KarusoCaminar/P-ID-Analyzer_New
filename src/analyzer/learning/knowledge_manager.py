@@ -137,7 +137,7 @@ class KnowledgeManager:
         self._ensure_database_structure()
         
         # Load vector indices (fast - from pre-built .npy files, or skip if not exist)
-        self._build_vector_index()  # Actually loads, doesn't build
+        self._load_vector_indices()
     
     def _lazy_load_learning_database(self) -> None:
         """Lazy load learning database if not already loaded."""
@@ -174,79 +174,88 @@ class KnowledgeManager:
         self.learning_database.setdefault("symbol_library", {})
         self.learning_database.setdefault("learned_visual_corrections", {})
     
-    def _build_vector_index(self) -> None:
-        """Load pre-built vector indices for fast similarity search."""
-        logger.info("Loading pre-built vector indices...")
+    def _load_vector_indices(self) -> None:
+        """Lädt die vorkompilierten Vektor-Indizes aus .npy-Dateien."""
+        logger.info("Lade vorkompilierte Vektor-Indizes...")
         
-        # Indices directory
+        # Indices directory - use training_data/indices (same directory as learning_db.json)
         indices_dir = self.learning_db_path.parent / "indices"
         
         try:
-            # Load solution index (skip if not exists - will work without it)
-            solution_index_file = indices_dir / "solution_index.npy"
-            solution_keys_file = indices_dir / "solution_keys.json"
+            # Load symbol index (required for similarity search)
+            symbol_index_path = indices_dir / "symbol_index.npy"
+            symbol_ids_path = indices_dir / "symbol_ids.json"
+            symbol_data_path = indices_dir / "symbol_data.json"
             
-            if solution_index_file.exists() and solution_keys_file.exists():
+            if not all([symbol_index_path.exists(), symbol_ids_path.exists(), symbol_data_path.exists()]):
+                logger.error("FATAL: Vektor-Index-Dateien (.npy, .json) nicht gefunden.")
+                logger.error(f"Suchen in: {indices_dir.resolve()}")
+                logger.error("Führen Sie 'python scripts/training/build_vector_indices.py' aus, um die Indizes zu erstellen.")
+                self._symbol_vector_index = None
+                self._symbol_vector_ids = []
+                self._symbol_vector_data = []
+            else:
                 try:
-                    logger.info("Loading solution vector index...")
-                    # Load without memory mapping for faster access
-                    self._solution_vector_index = np.load(solution_index_file)
-                    with open(solution_keys_file, 'r', encoding='utf-8') as f:
-                        self._solution_vector_keys = json.load(f)
-                    # CRITICAL FIX: Don't load solution values from learning_db here - that's slow!
-                    # Load them on-demand when actually needed
-                    self._solution_vector_solutions = []  # Will be loaded on-demand
-                    logger.info(f"✓ Loaded {len(self._solution_vector_keys)} solution vectors")
+                    logger.info("Lade Symbol-Index...")
+                    self._symbol_vector_index = np.load(symbol_index_path)
+                    with open(symbol_ids_path, 'r', encoding='utf-8') as f:
+                        self._symbol_vector_ids = json.load(f)
+                    with open(symbol_data_path, 'r', encoding='utf-8') as f:
+                        self._symbol_vector_data = json.load(f)
+                    logger.info(f"Symbol-Index mit {len(self._symbol_vector_ids)} Vektoren geladen.")
                 except Exception as e:
-                    logger.warning(f"Error loading solution index: {e}")
+                    logger.error(f"Fehler beim Laden des Symbol-Index: {e}", exc_info=True)
+                    self._symbol_vector_index = None
+                    self._symbol_vector_ids = []
+                    self._symbol_vector_data = []
+            
+            # Load solution index (optional - for solution similarity search)
+            solution_index_path = indices_dir / "solution_index.npy"
+            solution_keys_path = indices_dir / "solution_keys.json"
+            solution_values_path = indices_dir / "solution_values.json"
+            
+            if solution_index_path.exists() and solution_keys_path.exists():
+                try:
+                    logger.info("Lade Solution-Index...")
+                    self._solution_vector_index = np.load(solution_index_path)
+                    with open(solution_keys_path, 'r', encoding='utf-8') as f:
+                        self._solution_vector_keys = json.load(f)
+                    # Load solution values if available (optional)
+                    if solution_values_path.exists():
+                        with open(solution_values_path, 'r', encoding='utf-8') as f:
+                            solution_metadata = json.load(f)
+                            # Convert metadata back to full solution data structure if needed
+                            self._solution_vector_solutions = solution_metadata
+                    else:
+                        self._solution_vector_solutions = []
+                    logger.info(f"Solution-Index mit {len(self._solution_vector_keys)} Vektoren geladen.")
+                except Exception as e:
+                    logger.warning(f"Fehler beim Laden des Solution-Index: {e}")
                     self._solution_vector_index = None
                     self._solution_vector_keys = []
                     self._solution_vector_solutions = []
             else:
-                logger.debug("Solution vector index not found - similarity search will be slower")
+                logger.debug("Solution-Index nicht gefunden - Lösungssuche wird langsamer sein")
                 self._solution_vector_index = None
                 self._solution_vector_keys = []
                 self._solution_vector_solutions = []
             
-            # Load symbol index (skip if not exists - will work without it)
-            symbol_index_file = indices_dir / "symbol_index.npy"
-            symbol_ids_file = indices_dir / "symbol_ids.json"
-            
-            if symbol_index_file.exists() and symbol_ids_file.exists():
-                try:
-                    logger.info("Loading symbol vector index...")
-                    # Load without memory mapping for faster access
-                    self._symbol_vector_index = np.load(symbol_index_file)
-                    with open(symbol_ids_file, 'r', encoding='utf-8') as f:
-                        self._symbol_vector_ids = json.load(f)
-                    # CRITICAL FIX: Don't load symbol data from learning_db here - that's slow!
-                    # Load them on-demand when actually needed
-                    self._symbol_vector_data = []  # Will be loaded on-demand
-                    logger.info(f"✓ Loaded {len(self._symbol_vector_ids)} symbol vectors")
-                except Exception as e:
-                    logger.warning(f"Error loading symbol index: {e}")
-                    self._symbol_vector_index = None
-                    self._symbol_vector_ids = []
-                    self._symbol_vector_data = []
-            else:
-                logger.debug("Symbol vector index not found - similarity search will be slower")
-                self._symbol_vector_index = None
-                self._symbol_vector_ids = []
-                self._symbol_vector_data = []
-            
             # Log summary
-            if self._solution_vector_index is not None or self._symbol_vector_index is not None:
-                logger.info("Vector indices loaded successfully")
+            if self._symbol_vector_index is not None:
+                logger.info("Vektor-Indizes erfolgreich geladen.")
             else:
-                logger.info("No vector indices found - system will work but similarity search will be slower")
-                logger.info("To build indices: python scripts/training/build_vector_indices.py")
+                logger.warning("Keine Vektor-Indizes gefunden - System funktioniert, aber Similarity-Search wird langsamer sein")
+                logger.info("Zum Erstellen der Indizes: python scripts/training/build_vector_indices.py")
             
         except Exception as e:
-            logger.error(f"Error loading vector indices: {e}", exc_info=True)
-            # Set to None on error to prevent crashes
-            self._solution_vector_index = None
+            logger.error(f"Fehler beim Laden der Vektor-Indizes: {e}", exc_info=True)
             self._symbol_vector_index = None
-            logger.warning("Continuing without vector indices - similarity search will be slower")
+            self._solution_vector_index = None
+            self._symbol_vector_ids = []
+            self._symbol_vector_data = []
+            self._solution_vector_keys = []
+            self._solution_vector_solutions = []
+            logger.warning("Setze ohne Vektor-Indizes fort - Similarity-Search wird langsamer sein")
     
     def _convert_bbox_to_dict(self, obj: Any) -> Any:
         """
@@ -784,16 +793,12 @@ class KnowledgeManager:
                     logger.error(f"Error adding corrections: {e}", exc_info=True)
                     return []
         
-        # Pattern 3: Rebuild vector index AFTER releasing locks (slow operation)
-        # This prevents holding locks during expensive index building
-        try:
-            # CRITICAL FIX M1: Do NOT rebuild vector index here
-            # Vector indices are pre-built and should be rebuilt separately using build_vector_indices.py
-            # This prevents O(n) rebuilds during bulk operations
-            logger.info("Corrections added. Run 'python scripts/training/build_vector_indices.py' to update indices.")
-        except Exception as e:
-            logger.warning(f"Error in bulk_add_corrections: {e}")
-            # Don't fail the entire operation
+        # CRITICAL FIX M1: ENTFERNT - Kein Rebuild des Vector-Index mehr hier!
+        # Vector-Indizes werden separat vorkompiliert (build_vector_indices.py).
+        # Dies verhindert O(n) Rebuilds während Bulk-Operationen.
+        # Nach dem Hinzufügen von Korrekturen müssen die Indizes manuell neu erstellt werden:
+        # python scripts/training/build_vector_indices.py
+        logger.info(f"Corrections added. Run 'python scripts/training/build_vector_indices.py' to update indices.")
         
         return correction_ids if 'correction_ids' in locals() else []
     

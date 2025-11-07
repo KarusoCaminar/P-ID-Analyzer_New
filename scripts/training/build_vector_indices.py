@@ -33,6 +33,7 @@ LEARNING_DB_PATH = project_root / "training_data" / "learning_db.json"
 INDICES_DIR = project_root / "training_data" / "indices"
 SYMBOL_INDEX_FILE = INDICES_DIR / "symbol_index.npy"
 SYMBOL_IDS_FILE = INDICES_DIR / "symbol_ids.json"
+SYMBOL_DATA_FILE = INDICES_DIR / "symbol_data.json"
 SOLUTION_INDEX_FILE = INDICES_DIR / "solution_index.npy"
 SOLUTION_KEYS_FILE = INDICES_DIR / "solution_keys.json"
 SOLUTION_VALUES_FILE = INDICES_DIR / "solution_values.json"
@@ -160,18 +161,11 @@ def build_vector_indices():
             json.dump(symbol_ids_list, f, indent=2, ensure_ascii=False)
         logger.info(f"✓ Saved symbol IDs: {SYMBOL_IDS_FILE}")
         
-        # Save symbol data (simplified - only essential metadata)
-        symbol_metadata = [
-            {
-                'id': sym_id,
-                'type': data.get('type', 'unknown'),
-                'confidence': data.get('confidence', 0.0)
-            }
-            for sym_id, data in zip(symbol_ids_list, valid_symbols_data)
-        ]
-        with open(INDICES_DIR / "symbol_metadata.json", 'w', encoding='utf-8') as f:
-            json.dump(symbol_metadata, f, indent=2, ensure_ascii=False)
-        logger.info(f"✓ Saved symbol metadata")
+        # Save symbol data (full data for lookup - as per plan)
+        symbol_data_file = INDICES_DIR / "symbol_data.json"
+        with open(symbol_data_file, 'w', encoding='utf-8') as f:
+            json.dump(valid_symbols_data, f, indent=2, ensure_ascii=False)
+        logger.info(f"✓ Saved symbol data: {symbol_data_file}")
     else:
         logger.warning("No valid symbol embeddings found")
     

@@ -52,8 +52,7 @@ class PromptsConfig(BaseModel):
     general_system_prompt: str = ""
     metadata_extraction_user_prompt: str = ""
     legend_extraction_user_prompt: str = ""
-    symbol_detection_user_prompt: str = ""
-    raster_analysis_user_prompt_template: str = ""
+    swarm_analysis_user_prompt_template: str = ""
     monolithic_analysis_prompt_template: str = ""
     polyline_extraction_user_prompt: str = ""
 

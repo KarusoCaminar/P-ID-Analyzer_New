@@ -183,6 +183,10 @@ class PipelineCoordinator(IProcessor):
         # Get output directory first (needed for initialization)
         final_output_dir = output_dir or self._get_output_directory(image_path)
         
+        # CRITICAL: Ensure structured output directories exist (Gold Standard Structure)
+        from src.utils.output_structure_manager import ensure_output_structure
+        ensure_output_structure(Path(final_output_dir))
+        
         # TEST HARNESS: Save configuration snapshot and test metadata if test_name provided
         if params_override and 'test_name' in params_override:
             from src.utils.test_harness import save_config_snapshot, save_test_metadata
@@ -1534,13 +1538,16 @@ Be honest and strict in your evaluation."""
         
         elements_map = {el.get('id'): el for el in elements if el.get('id')}
         output_dir = Path(self._get_output_directory(self.current_image_path))
-        temp_dir = output_dir / "temp_polylines"
-        temp_dir.mkdir(exist_ok=True)
+        
+        # CRITICAL: Use temp/ subdirectory for temporary files
+        temp_dir = output_dir / "temp" / "temp_polylines"
+        temp_dir.mkdir(parents=True, exist_ok=True)
         
         logger.info(f"Processing {len(connections)} connections for polyline extraction...")
         
         def process_connection(conn):
             """Process a single connection to extract its polyline."""
+            from PIL import Image  # CRITICAL FIX: Import within function scope for thread safety
             try:
                 from_el = elements_map.get(conn.get('from_id'))
                 to_el = elements_map.get(conn.get('to_id'))
@@ -1719,29 +1726,55 @@ Be honest and strict in your evaluation."""
         max_iterations = self.active_logic_parameters.get('max_self_correction_iterations', 3)
         target_score = self.active_logic_parameters.get('target_quality_score', 98.0)
         
+        # CRITICAL FIX 1: Initialize score_history in best_result from the start
+        # This ensures score_history is always available, even if score never improves
+        if "score_history" not in self._analysis_results:
+            self._analysis_results["score_history"] = []
+        
         best_result: Dict[str, Any] = {
             "quality_score": -1.0,
             "final_ai_data": copy.deepcopy(self._analysis_results)
         }
+        # Ensure score_history exists in best_result
+        if "score_history" not in best_result["final_ai_data"]:
+            best_result["final_ai_data"]["score_history"] = []
         
         for i in range(max_iterations):
             iteration_name = f"Correction Iteration {i+1}/{max_iterations}"
             progress = 60 + int((i / max_iterations) * 25)
             self._update_progress(progress, iteration_name)
             
+            # CRITICAL FIX 2: Validate connection semantics before validation
+            # This removes invalid connections (e.g., FT-10 as source) before scoring
+            validated_connections = self._validate_connection_semantics(
+                self._analysis_results.get('connections', []),
+                self._analysis_results.get('elements', [])
+            )
+            self._analysis_results['connections'] = validated_connections
+            
             # Validate and get quality score
             current_score, current_errors = self._run_phase_3_validation_and_critic(truth_data)
             
+            # CRITICAL FIX 1: Always append to score_history BEFORE updating best_result
             if "score_history" not in self._analysis_results:
                 self._analysis_results["score_history"] = []
             self._analysis_results["score_history"].append(current_score)
             
-            # Update best result
+            # CRITICAL FIX 3: Always update best_result["final_ai_data"] with latest data,
+            # but only update quality_score if it improved
+            # This ensures score_history is ALWAYS tracked, even if score doesn't improve
             if current_score > best_result["quality_score"]:
-                best_result = {
-                    "quality_score": current_score,
-                    "final_ai_data": copy.deepcopy(self._analysis_results)
-                }
+                # Score improved - update both quality_score and final_ai_data
+                best_result["quality_score"] = current_score
+                best_result["final_ai_data"] = copy.deepcopy(self._analysis_results)
+            else:
+                # Score didn't improve - still update final_ai_data to track score_history
+                # BUT keep the best quality_score
+                best_result["final_ai_data"] = copy.deepcopy(self._analysis_results)
+            
+            # CRITICAL FIX 3: Ensure score_history is always up-to-date in best_result
+            # This is redundant but ensures consistency
+            best_result["final_ai_data"]["score_history"] = self._analysis_results.get("score_history", []).copy()
             
             # TEST HARNESS: Save intermediate result after each iteration
             if hasattr(self, 'current_output_dir'):
@@ -1776,6 +1809,9 @@ Be honest and strict in your evaluation."""
                     logger.warning(f"Error in visual feedback validation: {e}. Continuing without visual corrections.", exc_info=True)
             # --- ENDE Visuelles Feedback ---
             
+            # CRITICAL FIX 1: Score history is already updated above (after current_score calculation)
+            # This ensures score_history contains ALL iterations, not just the best one
+            
             # Early termination conditions
             if current_score >= target_score:
                 logger.info(f"Target quality score reached ({current_score:.2f} >= {target_score:.2f}). Stopping corrections.")
@@ -1801,7 +1837,216 @@ Be honest and strict in your evaluation."""
             self._analysis_results = corrected_results
         
         logger.info(f"Self-correction complete. Best score: {best_result['quality_score']:.2f}")
+        
+        # CRITICAL FIX: Ensure score_history is always included in final result
+        # This ensures the visualization gets all iteration scores, even if best_result wasn't updated
+        if "score_history" in self._analysis_results:
+            best_result["final_ai_data"]["score_history"] = self._analysis_results["score_history"]
+            logger.info(f"Score history: {len(self._analysis_results['score_history'])} iterations recorded")
+        else:
+            # Fallback: Create score_history from best score if not tracked
+            logger.warning("Score history not found in _analysis_results. Creating fallback.")
+            best_result["final_ai_data"]["score_history"] = [best_result["quality_score"]]
+        
         return best_result
+    
+    def _detect_ports(
+        self,
+        elements: List[Dict[str, Any]],
+        connections: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        """
+        Detect ports for each element based on connections.
+        
+        CRITICAL FIX 4: This adds port information to elements, which is required for CGM generation.
+        Ports are detected based on:
+        - Input ports: Elements that connect TO this element
+        - Output ports: Elements that connect FROM this element
+        - Control ports: Control lines (ISA) that connect to Valves
+        
+        Args:
+            elements: List of element dictionaries
+            connections: List of connection dictionaries
+            
+        Returns:
+            List of elements with ports added
+        """
+        elements_map = {el.get('id'): el.copy() for el in elements if el.get('id')}
+        
+        # Build connection maps
+        input_connections = {}  # element_id -> [connections that end here]
+        output_connections = {}  # element_id -> [connections that start here]
+        control_connections = {}  # element_id -> [control connections]
+        
+        for conn in connections:
+            from_id = conn.get('from_id')
+            to_id = conn.get('to_id')
+            kind = conn.get('kind', 'process')
+            
+            if not from_id or not to_id:
+                continue
+            
+            # Output connections
+            if from_id not in output_connections:
+                output_connections[from_id] = []
+            output_connections[from_id].append(conn)
+            
+            # Input connections
+            if to_id not in input_connections:
+                input_connections[to_id] = []
+            input_connections[to_id].append(conn)
+            
+            # Control connections
+            if kind == 'control':
+                if to_id not in control_connections:
+                    control_connections[to_id] = []
+                control_connections[to_id].append(conn)
+        
+        # Add ports to elements
+        for el in elements_map.values():
+            el_id = el.get('id')
+            if not el_id:
+                continue
+            
+            ports = []
+            
+            # Input ports
+            if el_id in input_connections:
+                input_count = len(input_connections[el_id])
+                for i, conn in enumerate(input_connections[el_id]):
+                    ports.append({
+                        'id': f'in_{i+1}',
+                        'name': f'In_{i+1}',
+                        'type': 'input',
+                        'connection_id': conn.get('id', f'conn_{i+1}'),
+                        'connected_from': conn.get('from_id')
+                    })
+            
+            # Output ports
+            if el_id in output_connections:
+                output_count = len(output_connections[el_id])
+                for i, conn in enumerate(output_connections[el_id]):
+                    ports.append({
+                        'id': f'out_{i+1}',
+                        'name': f'Out_{i+1}',
+                        'type': 'output',
+                        'connection_id': conn.get('id', f'conn_{i+1}'),
+                        'connected_to': conn.get('to_id')
+                    })
+            
+            # Control ports (for Valves)
+            if el_id in control_connections:
+                control_count = len(control_connections[el_id])
+                for i, conn in enumerate(control_connections[el_id]):
+                    ports.append({
+                        'id': f'control_{i+1}',
+                        'name': f'Control_{i+1}',
+                        'type': 'control',
+                        'connection_id': conn.get('id', f'conn_{i+1}'),
+                        'connected_from': conn.get('from_id')
+                    })
+            
+            el['ports'] = ports
+        
+        # Convert back to list
+        return list(elements_map.values())
+    
+    def _validate_connection_semantics(
+        self,
+        connections: List[Dict[str, Any]],
+        elements: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        """
+        Validate connections based on element type semantics.
+        
+        CRITICAL FIX 2: This validates connections to prevent invalid structures like:
+        - Sensors (FT-*) acting as sources
+        - Control lines (ISA) connecting to non-valves
+        - Backwards connections (Sensor → Pump)
+        
+        Rules:
+        - Sensors (FT-*, PT-*, etc.) should NOT be sources
+        - Sources (Pumps, P-*, etc.) should NOT have inputs (except for feedback loops)
+        - Sinks should NOT have outputs
+        - Control lines (ISA-*) should only connect to Valves
+        - Invalid connections are either removed or reversed
+        
+        Args:
+            connections: List of connection dictionaries
+            elements: List of element dictionaries
+            
+        Returns:
+            Validated list of connections (invalid ones removed or corrected)
+        """
+        elements_map = {el.get('id'): el for el in elements if el.get('id')}
+        validated_connections = []
+        
+        # Element type categories
+        source_types = {'Source', 'Pump', 'CHP', 'HP'}
+        sensor_types = {'Flow Transmitter', 'Volume Flow Sensor', 'FT', 'PT', 'TT', 'Pressure Transmitter', 'Temperature Transmitter'}
+        sink_types = {'Sink', 'Reactor', 'Tank', 'Storage'}
+        control_sources = {'ISA', 'ISA-Supply', 'Instrument Air Supply'}
+        
+        removed_count = 0
+        reversed_count = 0
+        
+        for conn in connections:
+            from_id = conn.get('from_id')
+            to_id = conn.get('to_id')
+            
+            if not from_id or not to_id:
+                continue
+            
+            from_el = elements_map.get(from_id)
+            to_el = elements_map.get(to_id)
+            
+            if not from_el or not to_el:
+                continue
+            
+            from_type = from_el.get('type', '')
+            to_type = to_el.get('type', '')
+            from_label = from_el.get('label', '')
+            
+            # RULE 1: Sensors should NOT be sources (CRITICAL FIX 2)
+            if from_type in sensor_types:
+                logger.warning(f"Invalid connection: Sensor {from_id} ({from_type}) cannot be source. Removing connection {from_id} → {to_id}.")
+                removed_count += 1
+                continue
+            
+            # RULE 2: Control lines (ISA) should only connect to Valves
+            if from_id in control_sources or from_type in control_sources or 'ISA' in from_label:
+                if to_type != 'Valve' and 'Valve' not in to_type:
+                    logger.warning(f"Invalid connection: Control line {from_id} → {to_id} ({to_type}). Control lines should only connect to Valves. Removing connection.")
+                    removed_count += 1
+                    continue
+                # Mark as control connection
+                conn['kind'] = 'control'
+            
+            # RULE 3: Reverse invalid connections (Sensor → Source/Pump)
+            # If connection is backwards (Sensor → Pump), try to reverse it
+            if from_type in sensor_types and to_type in source_types:
+                logger.warning(f"Reversing invalid connection: {from_id} → {to_id} (Sensor → Source). New: {to_id} → {from_id}")
+                # Reverse connection
+                conn_copy = conn.copy()
+                conn_copy['from_id'] = to_id
+                conn_copy['to_id'] = from_id
+                validated_connections.append(conn_copy)
+                reversed_count += 1
+                continue
+            
+            # RULE 4: Remove connections where Source has input (except if it's a feedback loop, but we'll be conservative)
+            # This is less critical, so we'll just log it
+            if from_type in sink_types and to_type in source_types:
+                logger.debug(f"Potentially invalid connection: Sink {from_id} → Source {to_id}. This might be a feedback loop, keeping it.")
+            
+            # Connection is valid
+            validated_connections.append(conn)
+        
+        if removed_count > 0 or reversed_count > 0:
+            logger.info(f"Connection validation: Removed {removed_count} invalid connections, reversed {reversed_count} connections. "
+                       f"Total: {len(connections)} → {len(validated_connections)}")
+        
+        return validated_connections
     
     def _run_visual_feedback_validation(
         self,
@@ -1848,7 +2093,11 @@ Be honest and strict in your evaluation."""
             
             # Generate debug map
             output_path = Path(output_dir)
-            debug_map_path = output_path / f"debug_map_iteration_{iteration + 1}.png"
+            
+            # CRITICAL: Save to visualizations/ subdirectory
+            visualizations_dir = output_path / "visualizations"
+            visualizations_dir.mkdir(parents=True, exist_ok=True)
+            debug_map_path = visualizations_dir / f"debug_map_iteration_{iteration + 1}.png"
             
             success = visualizer.draw_debug_map(
                 image_path,
@@ -2243,10 +2492,32 @@ Be honest and strict in your evaluation."""
                 
                 # Learn from corrections immediately
                 try:
+                    # CRITICAL FIX: Calculate quality score directly from validation
+                    # Use the same method as in _run_phase_3_validation_and_critic
+                    from src.analyzer.evaluation.kpi_calculator import KPICalculator
+                    kpi_calculator = KPICalculator()
+                    kpis = kpi_calculator.calculate_comprehensive_kpis(self._analysis_results, None)
+                    quality_score = kpis.get('quality_score', 0.0)
+                    
+                    # Fallback calculation if quality_score is 0
+                    if quality_score == 0.0:
+                        elements = self._analysis_results.get("elements", [])
+                        connections = self._analysis_results.get("connections", [])
+                        quality_score = 50.0  # Base score
+                        if elements:
+                            avg_confidence = sum(el.get('confidence', 0.5) for el in elements) / len(elements)
+                            quality_score += min(len(elements) * 1.5, 25.0)
+                            quality_score += avg_confidence * 15.0
+                        if connections:
+                            avg_conn_confidence = sum(conn.get('confidence', 0.5) for conn in connections) / len(connections)
+                            quality_score += min(len(connections) * 1.0, 15.0)
+                            quality_score += avg_conn_confidence * 10.0
+                        quality_score = min(max(quality_score, 0.0), 100.0)
+                    
                     self.active_learner.learn_from_analysis_result(
                         analysis_result=self._analysis_results,
                         truth_data=None,  # Can be enhanced with truth data
-                        quality_score=self._calculate_quality_score(self._analysis_results)
+                        quality_score=quality_score
                     )
                     logger.info("Live learning: Learned from re-analysis corrections")
                 except Exception as e:
@@ -2291,34 +2562,42 @@ Be honest and strict in your evaluation."""
         if is_phase1_only:
             logger.info("Phase 1-only mode: Proceeding with legend/metadata only (no elements expected)")
         
-        # Calculate KPIs
-        kpis = self._calculate_kpis(final_ai_data, truth_data)
-        
-        # Generate CGM data (simplified for now)
-        cgm_data = self._generate_cgm_data(final_ai_data)
-        
-        # Save artifacts
-        self._save_artifacts(output_dir, image_path, final_ai_data, kpis, cgm_data)
-        
-        # Generate visualizations
-        score_history = best_result.get("final_ai_data", {}).get("score_history", [])
-        if output_dir:
-            self._generate_visualizations(output_dir, image_path, final_ai_data, kpis, score_history)
-        
+        # CRITICAL FIX P1: NormalizationEngine MUST run BEFORE KPI calculation
+        # This ensures IDs are normalized (e.g., "SamplePoint-S" → "Sample Point") before matching
         # Convert elements and connections to Pydantic models if needed
         elements_data = final_ai_data.get("elements", [])
         connections_data = final_ai_data.get("connections", [])
         
-        # CRITICAL: Use NormalizationEngine for validation and normalization (extracted from Phase 4)
+        # CRITICAL: Use NormalizationEngine for validation and normalization BEFORE KPIs
         from src.analyzer.analysis.normalization_engine import NormalizationEngine
         
         config_dict = self.config_service.get_config().model_dump() if hasattr(self.config_service.get_config(), 'model_dump') else self.config_service.get_raw_config()
         normalization_engine = NormalizationEngine(config_dict)
         
         # Process elements and connections through normalization engine
+        # This normalizes IDs, corrects types, and validates connections
         elements_models, connections_models, normalization_stats = normalization_engine.process(
             elements_data, connections_data
         )
+        
+        # CRITICAL FIX P1: Update final_ai_data with normalized results BEFORE KPI calculation
+        normalized_final_data = final_ai_data.copy()
+        normalized_final_data["elements"] = [el.model_dump() if hasattr(el, 'model_dump') else el.dict() if hasattr(el, 'dict') else el for el in elements_models]
+        normalized_final_data["connections"] = [conn.model_dump() if hasattr(conn, 'model_dump') else conn.dict() if hasattr(conn, 'dict') else conn for conn in connections_models]
+        
+        # Calculate KPIs using NORMALIZED data (so IDs match correctly)
+        kpis = self._calculate_kpis(normalized_final_data, truth_data)
+        
+        # Generate CGM data using NORMALIZED data
+        cgm_data = self._generate_cgm_data(normalized_final_data)
+        
+        # Save artifacts
+        self._save_artifacts(output_dir, image_path, normalized_final_data, kpis, cgm_data)
+        
+        # Generate visualizations
+        score_history = best_result.get("final_ai_data", {}).get("score_history", [])
+        if output_dir:
+            self._generate_visualizations(output_dir, image_path, normalized_final_data, kpis, score_history)
         
         logger.info(f"Post-processing complete: {len(elements_models)} elements, {len(connections_models)} connections (after normalization)")
         
@@ -2502,26 +2781,21 @@ Be honest and strict in your evaluation."""
                     # Pydantic v2 model - recursively convert
                     el_dict = to_dict_recursive(el)
                     elements.append(el_dict)
-                elif hasattr(el, 'dict'):
-                    # Pydantic v1 model - recursively convert
-                    el_dict = to_dict_recursive(el)
-                    elements.append(el_dict)
                 elif isinstance(el, dict):
-                    # Already a dict - recursively convert nested objects
-                    elements.append(to_dict_recursive(el))
+                    elements.append(el)
                 else:
-                    # Try to convert to dict
-                    el_dict = to_dict_recursive(el)
-                    elements.append(el_dict)
+                    # Fallback: try to convert using dict()
+                    elements.append(to_dict_recursive(el))
             except Exception as e:
-                logger.warning(f"Could not convert element to dict: {el} - {e}")
-                continue
+                logger.warning(f"Error converting element to dict: {e}")
+                if isinstance(el, dict):
+                    elements.append(el)
         
+        # Convert connections to dictionaries if needed
         connections = []
         for conn in connections_raw:
             try:
                 if hasattr(conn, 'model_dump'):
-                    # Pydantic v2 model - recursively convert
                     conn_dict = to_dict_recursive(conn)
                     connections.append(conn_dict)
                 elif hasattr(conn, 'dict'):
@@ -2529,15 +2803,20 @@ Be honest and strict in your evaluation."""
                     conn_dict = to_dict_recursive(conn)
                     connections.append(conn_dict)
                 elif isinstance(conn, dict):
-                    # Already a dict - recursively convert nested objects
-                    connections.append(to_dict_recursive(conn))
+                    connections.append(conn)
                 else:
-                    # Try to convert to dict
+                    # Fallback: try to convert using dict()
                     conn_dict = to_dict_recursive(conn)
                     connections.append(conn_dict)
             except Exception as e:
-                logger.warning(f"Could not convert connection to dict: {conn} - {e}")
-                continue
+                logger.warning(f"Error converting connection to dict: {e}")
+                if isinstance(conn, dict):
+                    connections.append(conn)
+        
+        # CRITICAL FIX 4: Detect ports for elements based on connections
+        # This must be done AFTER connections are converted to dicts
+        elements_with_ports = self._detect_ports(elements, connections)
+        elements = elements_with_ports
         
         # Use CGM Generator with graph theory
         try:
@@ -2612,13 +2891,13 @@ Be honest and strict in your evaluation."""
                 cgm_data["components"].append(group)
                 cgm_data["component_groups"][el_type] = group
         
-        # Create connectors (connections between main components)
-        main_component_elements = {}
+        # Create connectors (connections between ALL components, not just main_components)
+        # CRITICAL FIX: Use ALL elements, not just main_components, to include all connections
+        all_elements_map = {}
         for el in elements:
-            el_type = el.get("type", "unknown") if isinstance(el, dict) else getattr(el, 'type', 'unknown')
             el_id = el.get("id") if isinstance(el, dict) else getattr(el, 'id', None)
-            if el_id and el_type in main_components:
-                main_component_elements[el_id] = el
+            if el_id:
+                all_elements_map[el_id] = el
         
         connectors = []
         for conn in connections:
@@ -2636,9 +2915,10 @@ Be honest and strict in your evaluation."""
                 confidence = getattr(conn, 'confidence', 0.5)
                 kind = getattr(conn, 'kind', 'process')
             
-            if from_id and to_id and from_id in main_component_elements and to_id in main_component_elements:
-                from_el = main_component_elements[from_id]
-                to_el = main_component_elements[to_id]
+            # CRITICAL FIX: Check if both elements exist in ALL elements (not just main_components)
+            if from_id and to_id and from_id in all_elements_map and to_id in all_elements_map:
+                from_el = all_elements_map[from_id]
+                to_el = all_elements_map[to_id]
                 
                 from_type = from_el.get("type") if isinstance(from_el, dict) else getattr(from_el, 'type', 'unknown')
                 to_type = to_el.get("type") if isinstance(to_el, dict) else getattr(to_el, 'type', 'unknown')
@@ -2658,10 +2938,16 @@ Be honest and strict in your evaluation."""
         
         # Identify system flows (sequences of connected main components)
         from src.utils.graph_utils import dedupe_connections
+        # CRITICAL FIX: Use all_elements_map instead of main_component_elements
+        main_component_elements = {
+            el_id: el for el_id, el in all_elements_map.items()
+            if (isinstance(el, dict) and el.get("type", "unknown") in main_components) or
+               (hasattr(el, 'type') and getattr(el, 'type', 'unknown') in main_components)
+        }
         main_connections = [
             conn for conn in connections
-            if conn.get("from_id") in main_component_elements and
-               conn.get("to_id") in main_component_elements
+            if (conn.get("from_id") if isinstance(conn, dict) else getattr(conn, 'from_id', None)) in main_component_elements and
+               (conn.get("to_id") if isinstance(conn, dict) else getattr(conn, 'to_id', None)) in main_component_elements
         ]
         
         # Build flow sequences
@@ -2720,6 +3006,10 @@ Be honest and strict in your evaluation."""
         """
         Save analysis artifacts to output directory.
         
+        CRITICAL: Uses OutputStructureManager to enforce folder structure.
+        - Data files → data/ subdirectory
+        - Artifacts → artifacts/ subdirectory
+        
         Args:
             output_dir: Output directory path
             image_path: Path to input image
@@ -2732,6 +3022,12 @@ Be honest and strict in your evaluation."""
         output_path = Path(output_dir)
         output_path.mkdir(parents=True, exist_ok=True)
         
+        # CRITICAL: Ensure structured output directories exist
+        data_dir = output_path / "data"
+        artifacts_dir = output_path / "artifacts"
+        data_dir.mkdir(parents=True, exist_ok=True)
+        artifacts_dir.mkdir(parents=True, exist_ok=True)
+        
         base_name = Path(image_path).stem
         
         # Get legend info for structured output
@@ -2741,28 +3037,28 @@ Be honest and strict in your evaluation."""
             'metadata': final_data.get('metadata', {})
         }
         
-        # Save JSON results with legend info
+        # Save JSON results with legend info → data/
         results_data = final_data.copy()
         results_data['legend_info'] = legend_info
-        results_path = output_path / f"{base_name}_results.json"
+        results_path = data_dir / f"{base_name}_results.json"
         with open(results_path, 'w', encoding='utf-8') as f:
             json.dump(results_data, f, indent=2, ensure_ascii=False)
         logger.info(f"Saved results to: {results_path}")
         
-        # Save separate legend info file for easy access
-        legend_info_path = output_path / f"{base_name}_legend_info.json"
+        # Save separate legend info file for easy access → data/
+        legend_info_path = data_dir / f"{base_name}_legend_info.json"
         with open(legend_info_path, 'w', encoding='utf-8') as f:
             json.dump(legend_info, f, indent=2, ensure_ascii=False)
         logger.info(f"Saved legend info to: {legend_info_path}")
         
-        # Save KPIs
-        kpis_path = output_path / f"{base_name}_kpis.json"
+        # Save KPIs → data/
+        kpis_path = data_dir / f"{base_name}_kpis.json"
         with open(kpis_path, 'w', encoding='utf-8') as f:
             json.dump(kpis, f, indent=2, ensure_ascii=False)
         logger.info(f"Saved KPIs to: {kpis_path}")
         
-        # Save CGM data (JSON format)
-        cgm_path = output_path / f"{base_name}_cgm_data.json"
+        # Save CGM data (JSON format) → data/
+        cgm_path = data_dir / f"{base_name}_cgm_data.json"
         cgm_json_save = {
             'components': cgm_data.get('components', []),
             'connectors': cgm_data.get('connectors', []),
@@ -2774,14 +3070,14 @@ Be honest and strict in your evaluation."""
             json.dump(cgm_json_save, f, indent=2, ensure_ascii=False)
         logger.info(f"Saved CGM JSON data to: {cgm_path}")
         
-        # Save CGM Python code (dataclass format)
+        # Save CGM Python code (dataclass format) → data/
         if cgm_data.get('python_code'):
-            cgm_py_path = output_path / f"{base_name}_cgm_network_generated.py"
+            cgm_py_path = data_dir / f"{base_name}_cgm_network_generated.py"
             with open(cgm_py_path, 'w', encoding='utf-8') as f:
                 f.write(cgm_data['python_code'])
             logger.info(f"Saved CGM Python code to: {cgm_py_path}")
         
-        # Generate HTML report for professional presentation
+        # Generate HTML report for professional presentation → artifacts/
         self._generate_html_report(output_dir, image_path, final_data, legend_info, kpis, cgm_data)
     
     def _generate_visualizations(
@@ -2812,23 +3108,28 @@ Be honest and strict in your evaluation."""
             
             visualizer = Visualizer(img_width, img_height)
             output_path = Path(output_dir)
+            
+            # CRITICAL: Ensure visualizations subdirectory exists
+            visualizations_dir = output_path / "visualizations"
+            visualizations_dir.mkdir(parents=True, exist_ok=True)
+            
             base_name = Path(image_path).stem
             
-            # 1. Uncertainty heatmap
+            # 1. Uncertainty heatmap → visualizations/
             uncertain_zones = final_data.get("uncertain_zones", [])
             if uncertain_zones:
-                heatmap_path = output_path / f"{base_name}_uncertainty_heatmap.png"
+                heatmap_path = visualizations_dir / f"{base_name}_uncertainty_heatmap.png"
                 visualizer.draw_uncertainty_heatmap(
                     image_path=image_path,
                     uncertain_zones=uncertain_zones,
                     output_path=str(heatmap_path)
                 )
             
-            # 2. Debug map
+            # 2. Debug map → visualizations/
             elements = final_data.get("elements", [])
             connections = final_data.get("connections", [])
             if elements or connections:
-                debug_map_path = output_path / f"{base_name}_debug_map.png"
+                debug_map_path = visualizations_dir / f"{base_name}_debug_map.png"
                 visualizer.draw_debug_map(
                     image_path=image_path,
                     elements=elements,
@@ -2836,26 +3137,26 @@ Be honest and strict in your evaluation."""
                     output_path=str(debug_map_path)
                 )
             
-            # 3. Confidence map
+            # 3. Confidence map → visualizations/
             if elements:
-                confidence_map_path = output_path / f"{base_name}_confidence_map.png"
+                confidence_map_path = visualizations_dir / f"{base_name}_confidence_map.png"
                 visualizer.draw_confidence_map(
                     image_path=image_path,
                     elements=elements,
                     output_path=str(confidence_map_path)
                 )
             
-            # 4. Score curve
+            # 4. Score curve → visualizations/
             if score_history:
-                score_curve_path = output_path / f"{base_name}_score_curve.png"
+                score_curve_path = visualizations_dir / f"{base_name}_score_curve.png"
                 visualizer.plot_score_curve(
                     score_history=score_history,
                     output_path=str(score_curve_path)
                 )
             
-            # 5. KPI dashboard
+            # 5. KPI dashboard → visualizations/
             if kpis:
-                kpi_dashboard_path = output_path / f"{base_name}_kpi_dashboard.png"
+                kpi_dashboard_path = visualizations_dir / f"{base_name}_kpi_dashboard.png"
                 visualizer.plot_kpi_dashboard(
                     kpis=kpis,
                     output_path=str(kpi_dashboard_path)
@@ -2908,11 +3209,11 @@ Be honest and strict in your evaluation."""
                 logger.warning(f"Could not load image for HTML report: {e}")
                 img_data_url = ""
             
-            # Get visualization paths
-            viz_base = output_path / f"{base_name}"
-            debug_map_path = viz_base.parent / f"{base_name}_debug_map.png"
-            confidence_map_path = viz_base.parent / f"{base_name}_confidence_map.png"
-            kpi_dashboard_path = viz_base.parent / f"{base_name}_kpi_dashboard.png"
+            # CRITICAL: Get visualization paths from visualizations/ subdirectory
+            visualizations_dir = output_path / "visualizations"
+            debug_map_path = visualizations_dir / f"{base_name}_debug_map.png"
+            confidence_map_path = visualizations_dir / f"{base_name}_confidence_map.png"
+            kpi_dashboard_path = visualizations_dir / f"{base_name}_kpi_dashboard.png"
             
             # Helper to embed images
             def embed_image(image_path: Path) -> str:
@@ -3215,8 +3516,10 @@ Be honest and strict in your evaluation."""
 </html>
 """
             
-            # Save HTML report
-            html_path = output_path / f"{base_name}_report.html"
+            # CRITICAL: Save HTML report to artifacts/ subdirectory
+            artifacts_dir = output_path / "artifacts"
+            artifacts_dir.mkdir(parents=True, exist_ok=True)
+            html_path = artifacts_dir / f"{base_name}_report.html"
             with open(html_path, 'w', encoding='utf-8') as f:
                 f.write(html_content)
             logger.info(f"HTML report saved to: {html_path}")

@@ -96,7 +96,8 @@ class MonolithAnalyzer(IAnalyzer):
             return {"elements": [], "connections": []}
         
         output_dir = output_dir or Path(os.path.dirname(image_path))
-        temp_dir_path = output_dir / "temp_quadrants"
+        # CRITICAL: Use temp/ subdirectory for temporary files
+        temp_dir_path = output_dir / "temp" / "temp_quadrants"
         temp_dir_path.mkdir(exist_ok=True, parents=True)
         
         excluded_zones = excluded_zones or []
@@ -266,7 +267,7 @@ class MonolithAnalyzer(IAnalyzer):
                 "5. Find ALL connections between ALL elements you detect."
             ).replace(
                 "**1. \"elements\" List:**\n- CRITICAL: Provide an EMPTY list. You MUST NOT detect elements.\n- ` \"elements\": [] `",
-                "**1. \"elements\" List:**\n- Find ALL components (pumps, valves, sensors, etc.) in the diagram.\n- REQUIRED KEYS: `\"id\"`, `\"type\"`, `\"label\"`, `\"bbox\"`."
+                "**1. \"elements\" List:**\n- Find ALL components (pumps, valves, sensors, etc.) in the diagram.\n- REQUIRED KEYS: `\"id\"`, `\"type\"`, `\"label\"`, `\"bbox\"`, `\"confidence\"`.\n- **`\"ports\"`**: (MANDATORY) List of ports for this element. Each port must have: `\"id\"` (e.g., \"in_1\", \"out_1\", \"control_1\"), `\"name\"` (e.g., \"In\", \"Out\", \"Control\"), `\"type\"` (\"input\", \"output\", or \"control\").\n  - **Input ports**: For elements that receive flow FROM other elements (most elements have at least 1 input)\n  - **Output ports**: For elements that send flow TO other elements (most elements have at least 1 output)\n  - **Control ports**: For Valves that receive control signals (e.g., from ISA/Instrument Air Supply)\n  - **CRITICAL**: If you cannot determine ports visually, provide default ports: `[{\"id\": \"in_1\", \"name\": \"In\", \"type\": \"input\"}, {\"id\": \"out_1\", \"name\": \"Out\", \"type\": \"output\"}]`\n  - **CRITICAL**: Valves MUST have a control port if control lines are visible: `{\"id\": \"control_1\", \"name\": \"Control\", \"type\": \"control\"}`"
             )
             monolith_prompt = monolith_prompt_template_simple.replace(
                 "{ignore_zones_str}", "[]"
@@ -314,7 +315,7 @@ class MonolithAnalyzer(IAnalyzer):
                     "**CRITICAL RULES (STRICTLY ENFORCE):**\n1. **PRIMARY TASK: DETECT CONNECTIONS** between elements in the knowledge base.\n2. **SECONDARY TASK: DETECT ADDITIONAL ELEMENTS** from the legend that are NOT in the element list."
                 ).replace(
                     "**1. \"elements\" List:**\n- CRITICAL: Provide an EMPTY list. You MUST NOT detect elements.\n- ` \"elements\": [] `",
-                    "**1. \"elements\" List:**\n- PRIMARY: Provide an EMPTY list (connections are your main task).\n- SECONDARY: If you find symbols from the legend that are NOT in the element list above, add them here.\n- Only add elements that match symbols in the legend symbol map.\n- Use EXACT type names from the legend (case-sensitive, exact spacing)."
+                    "**1. \"elements\" List:**\n- PRIMARY: Provide an EMPTY list (connections are your main task).\n- SECONDARY: If you find symbols from the legend that are NOT in the element list above, add them here.\n- Only add elements that match symbols in the legend symbol map.\n- Use EXACT type names from the legend (case-sensitive, exact spacing).\n- REQUIRED KEYS: `\"id\"`, `\"type\"`, `\"label\"`, `\"bbox\"`, `\"confidence\"`.\n- **`\"ports\"`**: (MANDATORY) List of ports for this element. Each port must have: `\"id\"` (e.g., \"in_1\", \"out_1\", \"control_1\"), `\"name\"` (e.g., \"In\", \"Out\", \"Control\"), `\"type\"` (\"input\", \"output\", or \"control\").\n  - **Input ports**: For elements that receive flow FROM other elements (most elements have at least 1 input)\n  - **Output ports**: For elements that send flow TO other elements (most elements have at least 1 output)\n  - **Control ports**: For Valves that receive control signals (e.g., from ISA/Instrument Air Supply)\n  - **CRITICAL**: If you cannot determine ports visually, provide default ports: `[{\"id\": \"in_1\", \"name\": \"In\", \"type\": \"input\"}, {\"id\": \"out_1\", \"name\": \"Out\", \"type\": \"output\"}]`\n  - **CRITICAL**: Valves MUST have a control port if control lines are visible: `{\"id\": \"control_1\", \"name\": \"Control\", \"type\": \"control\"}`"
                 )
                 
                 monolith_prompt = monolith_prompt_enhanced.replace(

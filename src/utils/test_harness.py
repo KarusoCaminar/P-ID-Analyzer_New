@@ -5,6 +5,8 @@ This module provides functions to save:
 - Intermediate results after each phase
 - Configuration snapshots (config.yaml, prompts)
 - Test metadata
+
+CRITICAL: All functions now use OutputStructureManager to enforce folder structure.
 """
 
 import logging
@@ -21,17 +23,34 @@ def save_intermediate_result(phase_name: str, result: Dict[str, Any], output_dir
     """
     Save intermediate result after each phase for test harness.
     
+    CRITICAL: Uses OutputStructureManager to save to data/ subdirectory.
+    
     Args:
         phase_name: Name of the phase (e.g., 'phase_2a_swarm', 'phase_2b_guardrails')
         result: Result dictionary to save
         output_dir: Output directory for test artifacts
     """
     try:
-        output_path = Path(output_dir)
-        output_path.mkdir(parents=True, exist_ok=True)
+        from src.utils.output_structure_manager import OutputStructureManager
         
-        # Save as JSON
-        result_file = output_path / f"output_{phase_name}.json"
+        output_path = Path(output_dir)
+        
+        # Try to get OutputStructureManager if available
+        # If not available, fall back to old behavior (for backward compatibility)
+        try:
+            # Check if output_dir is already a structured output directory
+            # If it contains 'data' subdirectory, use it
+            data_dir = output_path / "data"
+            if data_dir.exists():
+                result_file = data_dir / f"output_{phase_name}.json"
+            else:
+                # Fallback: create data subdirectory
+                data_dir.mkdir(parents=True, exist_ok=True)
+                result_file = data_dir / f"output_{phase_name}.json"
+        except Exception:
+            # Final fallback: use old behavior
+            result_file = output_path / f"output_{phase_name}.json"
+        
         from src.utils.json_encoder import json_dump_safe
         
         with open(result_file, 'w', encoding='utf-8') as f:
@@ -46,23 +65,29 @@ def save_config_snapshot(config_service: Any, output_dir: str) -> None:
     """
     Save configuration snapshot for test harness.
     
+    CRITICAL: Uses OutputStructureManager to save to artifacts/ subdirectory.
+    
     Args:
         config_service: ConfigService instance
         output_dir: Output directory for test artifacts
     """
     try:
         output_path = Path(output_dir)
-        output_path.mkdir(parents=True, exist_ok=True)
         
-        # Save config.yaml snapshot
-        config_snapshot_path = output_path / "config_snapshot.yaml"
+        # Try to use artifacts subdirectory
+        artifacts_dir = output_path / "artifacts"
+        if not artifacts_dir.exists():
+            artifacts_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Save config.yaml snapshot to artifacts/
+        config_snapshot_path = artifacts_dir / "config_snapshot.yaml"
         config_path = Path("config.yaml")
         if config_path.exists():
             shutil.copy2(config_path, config_snapshot_path)
             logger.info(f"Saved config snapshot: {config_snapshot_path}")
         
-        # Save prompts snapshot
-        prompts_snapshot_path = output_path / "prompts_snapshot.json"
+        # Save prompts snapshot to artifacts/
+        prompts_snapshot_path = artifacts_dir / "prompts_snapshot.json"
         config = config_service.get_config()
         prompts = config.prompts
         
@@ -93,6 +118,8 @@ def save_test_metadata(
     """
     Save test metadata for test harness.
     
+    CRITICAL: Uses OutputStructureManager to save to artifacts/ subdirectory.
+    
     Args:
         output_dir: Output directory for test artifacts
         test_name: Name of the test
@@ -102,9 +129,13 @@ def save_test_metadata(
     """
     try:
         output_path = Path(output_dir)
-        output_path.mkdir(parents=True, exist_ok=True)
         
-        metadata_file = output_path / "test_metadata.md"
+        # Try to use artifacts subdirectory
+        artifacts_dir = output_path / "artifacts"
+        if not artifacts_dir.exists():
+            artifacts_dir.mkdir(parents=True, exist_ok=True)
+        
+        metadata_file = artifacts_dir / "test_metadata.md"
         
         # Get strategy info
         strategy_name = 'N/A'

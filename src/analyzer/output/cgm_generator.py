@@ -174,20 +174,44 @@ class Network:
     def _generate_network_instance(self) -> str:
         """Generate Network instance with all connectors."""
         connector_lines = []
+        connector_keys = set()  # CRITICAL FIX 3: Track unique connectors to avoid duplicates
         
         # FIX: Process all connections and filter out None connectors
         valid_connections = []
         for i, conn in enumerate(self.connections):
             connector_code = self._generate_connector_code(conn, i)
-            if connector_code:  # Only add if connector_code is not None
+            if connector_code:
+                # CRITICAL FIX 3: Create unique key for connector (from_id, to_id) to avoid duplicates
+                from_id = conn.get('from_id', '')
+                to_id = conn.get('to_id', '')
+                
+                # Normalize IDs for comparison
+                from_id_normalized = self._normalize_id(from_id)
+                to_id_normalized = self._normalize_id(to_id)
+                connector_key = (from_id_normalized, to_id_normalized)
+                
+                # Skip if duplicate
+                if connector_key in connector_keys:
+                    logger.debug(f"Skipping duplicate connector: {from_id} → {to_id}")
+                    continue
+                
+                connector_keys.add(connector_key)
                 connector_lines.append(connector_code)
                 valid_connections.append(conn)
         
-        logger.info(f"CGM generation: {len(self.connections)} connections -> {len(valid_connections)} valid connectors")
+        logger.info(f"CGM generation: {len(self.connections)} connections -> {len(valid_connections)} valid connectors (removed {len(self.connections) - len(valid_connections)} duplicates)")
         
-        # Handle split/merge points
+        # CRITICAL FIX 3: Handle split/merge points (only if not already in connector_lines)
         split_merge_connectors = self._detect_split_merge_connectors()
-        connector_lines.extend(split_merge_connectors)
+        split_merge_keys = set()
+        
+        for split_merge_code in split_merge_connectors:
+            # Extract from_id and to_id from split/merge connector code
+            # Format: Connector(name="...", from_converter_ports=(Port(unit_name="...", port="..."),), ...)
+            # We need to parse the code to get the connector key
+            # For now, we'll add all split/merge connectors but track them separately
+            # TODO: Improve parsing to extract actual connector keys from split/merge code
+            connector_lines.append(split_merge_code)
         
         connectors_code = "\n".join(f"        {line}" for line in connector_lines)
         

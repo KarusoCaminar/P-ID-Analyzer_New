@@ -227,11 +227,18 @@ strategies:
     critic_model_name: "Google Gemini 2.5 Flash"  # Flash für Geschwindigkeit
     meta_model: "Google Gemini 2.5 Pro"  # CRITICAL: Pro auch hier (Phase 1 zu wichtig!)
   
-  # LEGACY: Default Flash (backward compatibility)
-  # NOTE: Auch Legacy sollte Pro für Meta/Legend verwenden (zu wichtig!)
+  # STRATEGY 4: DEFAULT FLASH - Schnellste Strategie (nur Monolith, ganzes Bild)
+  # Optimiert für: Schnelle Analysen, einfache P&IDs
+  # Geschwindigkeit: ~3-8 Minuten pro Diagramm
+  # CRITICAL: Flash-Strategie = Schnell, nur Monolith (kein Swarm, keine Fusion)
   default_flash:
-    swarm_model: "Google Gemini 2.5 Flash"
-    monolith_model: "Google Gemini 2.5 Pro"  # CRITICAL: Always Pro for Monolith
+    # CRITICAL: Flash-Strategie = schnell, nur Monolith (kein Swarm, keine Fusion)
+    use_swarm_analysis: false  # CRITICAL: Flash = schnell, kein Swarm
+    use_monolith_analysis: true  # Monolith aktiviert
+    use_fusion: false  # Keine Fusion nötig (nur Monolith)
+    monolith_whole_image: true  # CRITICAL: Analysiere ganzes Bild für Geschwindigkeit (keine Quadranten)
+    swarm_model: "Google Gemini 2.5 Flash"  # Nicht verwendet (use_swarm_analysis: false)
+    monolith_model: "Google Gemini 2.5 Pro"  # CRITICAL: Always Pro for Monolith (NIEMALS Flash!)
     detail_model: "Google Gemini 2.5 Flash"
     polyline_model: "Google Gemini 2.5 Flash"  # Flash ausreichend (CV-basiert)
     correction_model: "Google Gemini 2.5 Flash"
@@ -726,14 +733,7 @@ prompts:
     }
     ```
 
-  symbol_detection_user_prompt: |
-    **TASK:** Identify ALL graphical P&ID symbols and their associated text labels from the image.
-    **OUTPUT:** A single JSON object with ONE key: "symbols", containing a list of objects.
-    **RULES:**
-    - Each object MUST have `"label"` (the text, e.g., "3 Way Valve") and `"bbox"` (enclosing symbol AND text).
-    - Provide ONLY the JSON object.
-
-  raster_analysis_user_prompt_template: |-
+  swarm_analysis_user_prompt_template: |-
     **ROLE:** You are a P&ID analysis engine with high precision requirements.
     **TASK:** Analyze the provided image segment and identify ALL components (symbols and text labels).
     
@@ -864,6 +864,12 @@ prompts:
     - Find ONLY components that are CLEARLY VISIBLE with strong visual evidence
     - REQUIRED KEYS: `"id"` (P&ID Tag Name, e.g., "P-201"), `"type"` (EXACT type from list), `"label"` (full descriptive text), and a tight `"bbox"` (symbol only, no text).
     - **`"confidence"`**: (float, 0.0-1.0) Your confidence that this element is correct (0.9+ = Very Sure, < 0.5 = Guessing).
+    - **`"ports"`**: (MANDATORY) List of ports for this element. Each port must have: `"id"` (e.g., "in_1", "out_1", "control_1"), `"name"` (e.g., "In", "Out", "Control"), `"type"` ("input", "output", or "control").
+      - **Input ports**: For elements that receive flow FROM other elements (most elements have at least 1 input)
+      - **Output ports**: For elements that send flow TO other elements (most elements have at least 1 output)
+      - **Control ports**: For Valves that receive control signals (e.g., from ISA/Instrument Air Supply)
+      - **CRITICAL**: If you cannot determine ports visually, provide default ports: `[{"id": "in_1", "name": "In", "type": "input"}, {"id": "out_1", "name": "Out", "type": "output"}]`
+      - **CRITICAL**: Valves MUST have a control port if control lines are visible: `{"id": "control_1", "name": "Control", "type": "control"}`
     - Use EXACT type names from the list above - CASE-SENSITIVE
     - Only include 'Line_Split' and 'Line_Merge' if they are CLEARLY VISIBLE and have visual evidence
     - If an element's label or type is ambiguous, DO NOT include it
@@ -882,18 +888,26 @@ prompts:
     **CORRECTION FEEDBACK (Fix these errors from the last run):**
     {error_feedback}
     
-    **EXAMPLE STRUCTURE (FOLLOW EXACTLY - NOTE EXACT TYPE NAMES AND CONFIDENCE):**
+    **EXAMPLE STRUCTURE (FOLLOW EXACTLY - NOTE EXACT TYPE NAMES, PORTS, AND CONFIDENCE):**
     ```json
     {
       "elements": [
         {
           "id": "P-101", "label": "Main Pump P-101", "type": "Pump",
           "bbox": {"x": 0.1, "y": 0.2, "width": 0.05, "height": 0.04},
+          "ports": [
+            {"id": "out_1", "name": "Out", "type": "output"}
+          ],
           "confidence": 0.95
         },
         {
           "id": "Fv-3-3040", "label": "Control Valve Fv-3-3040", "type": "Valve",
           "bbox": {"x": 0.3, "y": 0.4, "width": 0.02, "height": 0.03},
+          "ports": [
+            {"id": "in_1", "name": "In", "type": "input"},
+            {"id": "out_1", "name": "Out", "type": "output"},
+            {"id": "control_1", "name": "Control", "type": "control"}
+          ],
           "confidence": 0.90
         }
       ],
@@ -929,11 +943,27 @@ prompts:
     - **NOTE:** If the prompt is modified to allow additional element detection (e.g., in simple P&ID mode or when legend symbols are missing), then:
       - REQUIRED KEYS: `"id"`, `"type"`, `"label"`, `"bbox"`, `"confidence"`.
       - **`"confidence"`:** (float, 0.0-1.0) Your certainty that this element is correctly identified. 0.9+ = Very certain, < 0.5 = Guessed.
+      - **`"ports"`**: (MANDATORY) List of ports for this element. Each port must have: `"id"` (e.g., "in_1", "out_1", "control_1"), `"name"` (e.g., "In", "Out", "Control"), `"type"` ("input", "output", or "control").
+        - **Input ports**: For elements that receive flow FROM other elements (most elements have at least 1 input)
+        - **Output ports**: For elements that send flow TO other elements (most elements have at least 1 output)
+        - **Control ports**: For Valves that receive control signals (e.g., from ISA/Instrument Air Supply)
+        - **CRITICAL**: If you cannot determine ports visually, provide default ports: `[{"id": "in_1", "name": "In", "type": "input"}, {"id": "out_1", "name": "Out", "type": "output"}]`
+        - **CRITICAL**: Valves MUST have a control port if control lines are visible: `{"id": "control_1", "name": "Control", "type": "control"}`
     
     **2. "connections" List:**
     - Find ALL connections (lines/pipes) between the elements in the knowledge base.
-    - REQUIRED KEYS: `"from_id"`, `"to_id"`, `"from_port_id"`, `"to_port_id"`.
+    - REQUIRED KEYS: `"from_id"`, `"to_id"`, `"from_port_id"`, `"to_port_id"`, `"kind"`.
+    - **`"from_port_id"`**: ID of the output port on the source element (e.g., "out_1")
+    - **`"to_port_id"`**: ID of the input port on the destination element (e.g., "in_1")
+    - **`"kind"`**: Type of connection - MUST be one of: "process" (for process lines/pipes), "control" (for control lines like ISA/Instrument Air Supply), "electrical" (for electrical connections). 
+      - **CRITICAL**: Connections from ISA/Instrument Air Supply to Valves MUST have `"kind": "control"`
+      - **CRITICAL**: Regular process flow connections (Pump → Valve → Sensor → Mixer) MUST have `"kind": "process"`
     - **`"confidence"`**: (float, 0.0-1.0) Your confidence that this connection is correct (0.9+ = Very Sure, < 0.5 = Guessing).
+    - **CRITICAL CONNECTION RULES:**
+      - Sensors (FT-*, PT-*, etc.) should NOT be sources (from_id) - they measure flow, they don't generate it
+      - Sources (Pumps, P-*, etc.) should only have outputs (to_id) - they generate flow
+      - Control lines (ISA) should ONLY connect to Valves (not to Pumps, Sensors, or Mixers)
+      - If you see a connection like "FT-10 → Fv-3-3040", it's WRONG - reverse it to "Fv-3-3040 → FT-10"
     
     **CRITICAL: CONFIDENCE SCORES (MANDATORY):**
     - EVERY connection MUST have a "confidence" field (float, 0.0-1.0)
@@ -951,12 +981,26 @@ prompts:
         {
           "from_id": "P-101",
           "to_id": "Fv-3-3040",
+          "from_port_id": "out_1",
+          "to_port_id": "in_1",
+          "kind": "process",
           "confidence": 0.95
         },
         {
           "from_id": "Fv-3-3040",
           "to_id": "M-08",
+          "from_port_id": "out_1",
+          "to_port_id": "in_1",
+          "kind": "process",
           "confidence": 0.90
+        },
+        {
+          "from_id": "ISA",
+          "to_id": "Fv-3-3040",
+          "from_port_id": "out_1",
+          "to_port_id": "control_1",
+          "kind": "control",
+          "confidence": 0.95
         }
       ]
     }
@@ -971,6 +1015,9 @@ prompts:
           "type": "Pump",
           "label": "Main Pump P-101",
           "bbox": {"x": 0.1, "y": 0.2, "width": 0.05, "height": 0.04},
+          "ports": [
+            {"id": "out_1", "name": "Out", "type": "output"}
+          ],
           "confidence": 0.95
         }
       ],
@@ -978,6 +1025,9 @@ prompts:
         {
           "from_id": "P-101",
           "to_id": "Fv-3-3040",
+          "from_port_id": "out_1",
+          "to_port_id": "in_1",
+          "kind": "process",
           "confidence": 0.90
         }
       ]
