@@ -60,7 +60,7 @@ models:
   "Google Gemini 2.5 Pro":
     id: "gemini-2.5-pro"
     access_method: "gemini"
-    location: "us-central1"
+    location: "europe-west3"  # CRITICAL: Changed to Europe-West3 (Frankfurt) for better latency
     description: "Googles Top-Modell für höchste Genauigkeit bei komplexen Diagrammen. Optimiert für präzise Symbolerkennung."
     generation_config:
       temperature: 0.0          # Deterministic - maximale Präzision für Symbolerkennung
@@ -72,7 +72,7 @@ models:
   "Google Gemini 2.5 Flash":
     id: "gemini-2.5-flash"
     access_method: "gemini"
-    location: "us-central1"
+    location: "europe-west3"  # CRITICAL: Changed to Europe-West3 (Frankfurt) for better latency
     description: "Guter Kompromiss aus Geschwindigkeit und Qualität für Standardanalysen. Optimiert für präzise Symbolerkennung."
     generation_config:
       temperature: 0.0          # Deterministic - maximale Präzision für Symbolerkennung
@@ -84,7 +84,7 @@ models:
   "Google Gemini 2.0 Flash":
     id: "gemini-2.0-flash"
     access_method: "gemini"
-    location: "us-central1"
+    location: "europe-west3"  # CRITICAL: Changed to Europe-West3 (Frankfurt) for better latency
     description: "Ein schnelles und kostengünstiges Modell der 2.0-Generation. Optimiert für präzise Symbolerkennung."
     generation_config:
       temperature: 0.0          # Deterministic - maximale Präzision für Symbolerkennung
@@ -96,7 +96,7 @@ models:
   "Google Gemini 2.0 Flash-Lite":
     id: "gemini-2.0-flash-lite"
     access_method: "gemini"
-    location: "us-central1"
+    location: "europe-west3"  # CRITICAL: Changed to Europe-West3 (Frankfurt) for better latency
     description: "Kosteneffizientes Modell mit großem Kontextfenster. Optimiert für präzise Symbolerkennung."
     generation_config:
       temperature: 0.0          # Deterministic - maximale Präzision für Symbolerkennung
@@ -108,7 +108,7 @@ models:
   "Google Gemini 2.5 Flash-Lite (Preview)":
     id: "gemini-2.5-flash-lite-preview-06-17"
     access_method: "gemini"
-    location: "us-central1"
+    location: "europe-west3"  # CRITICAL: Changed to Europe-West3 (Frankfurt) for better latency
     description: "Neuestes, extrem schnelles Preview-Modell, ideal für schnelle Iterationen. Optimiert für präzise Symbolerkennung."
     generation_config:
       temperature: 0.0          # Deterministic - maximale Präzision für Symbolerkennung
@@ -120,7 +120,7 @@ models:
   "Google Gemini 1.5 Flash":
     id: "gemini-1.5-flash"
     access_method: "gemini"
-    location: "us-central1"
+    location: "europe-west3"  # CRITICAL: Changed to Europe-West3 (Frankfurt) for better latency
     description: "Schnelles und kosteneffizientes Gemini-Modell. Optimiert für präzise Symbolerkennung."
     generation_config:
       temperature: 0.0          # Deterministic - maximale Präzision für Symbolerkennung (reduced from 0.1)
@@ -132,7 +132,7 @@ models:
   "Google Gemini 1.5 Pro":
     id: "gemini-1.5-pro"
     access_method: "gemini"
-    location: "us-central1"
+    location: "europe-west3"  # CRITICAL: Changed to Europe-West3 (Frankfurt) for better latency
     description: "Leistungsstarkes Gemini-Modell für komplexe Aufgaben. Optimiert für präzise Symbolerkennung."
     generation_config:
       temperature: 0.0          # Deterministic - maximale Präzision für Symbolerkennung (reduced from 0.1)
@@ -146,7 +146,7 @@ models:
       # Es hat KEINE "generation_config" im klassischen Sinne, da es Embeddings und nicht Text generiert.
       id: "multimodalembedding@001" # Dies ist die korrekte ID für direkte Bild-Embeddings
       access_method: "vertex_ai_multimodal_embedding" # Expliziter Access Method für dieses Modell
-      location: "us-central1" # Standort für das Embedding-Modell
+      location: "europe-west3"  # CRITICAL: Changed to Europe-West3 (Frankfurt) for better latency # Standort für das Embedding-Modell
       description: "Vertex AI's dediziertes MultiModal Embedding Model für direkte Bild-Embeddings."
 
   # Definition verschiedener Analyse-Strategien für den CLI-Runner (Möglichkeit für Mischstrategien mit verschiedenen Modellen)
@@ -353,10 +353,10 @@ logic_parameters:
   # WICHTIG: Diese Werte müssen mit deiner Google Cloud Quota übereinstimmen!
   # Standard-Quota: 60 requests/min, 32k tokens/min
   # Empfohlene Quota: 300 requests/min, 100k tokens/min (siehe VERTEX_AI_QUOTA_AND_OPTIMIZATION_GUIDE.md)
-  llm_rate_limit_requests_per_minute: 300  # Anpassen basierend auf deiner Google Cloud Quota
+  llm_rate_limit_requests_per_minute: 200  # CRITICAL: Erhöht für bessere Performance (start conservative, DSQ optimizer adjusts)
   llm_rate_limit_tokens_per_minute: 100000  # Anpassen basierend auf deiner Google Cloud Quota
   # Maximale parallele Requests (verhindert Quota-Überschreitung)
-  llm_max_concurrent_requests: 10  # Reduziert parallele Requests, um Rate Limits zu vermeiden
+  llm_max_concurrent_requests: 15  # CRITICAL: Erhöht von 10 auf 15 für bessere Parallelität (war schon erfolgreich)
   # Größe des Festplatten-Caches für LLM-Antworten in Gigabyte
   llm_disk_cache_size_gb: 2
   # Anzahl der Einträge im Memory-Cache (Level 1, LRU)

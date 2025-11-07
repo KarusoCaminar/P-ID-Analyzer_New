@@ -411,9 +411,13 @@ class LLMClient:
                 # CRITICAL: DSQ Request Smoothing - throttle requests for steady traffic
                 # DSQ Insight: Steady traffic is prioritized over burst traffic
                 from src.analyzer.ai.dsq_optimizer import get_dsq_optimizer
+                # CRITICAL: Use higher initial rate for better performance
+                # DSQ optimizer will adjust automatically if rate limits occur
+                initial_rpm = self.config.get('logic_parameters', {}).get('llm_rate_limit_requests_per_minute', 200)
+                max_rpm = initial_rpm * 2  # Allow doubling if successful
                 dsq_optimizer = get_dsq_optimizer(
-                    initial_requests_per_minute=self.config.get('logic_parameters', {}).get('llm_rate_limit_requests_per_minute', 60),
-                    max_requests_per_minute=self.config.get('logic_parameters', {}).get('llm_rate_limit_requests_per_minute', 300)
+                    initial_requests_per_minute=initial_rpm,
+                    max_requests_per_minute=max_rpm
                 )
                 
                 # Apply request smoothing (throttle if sending too fast)
