@@ -4,6 +4,8 @@ API Rate Limit Test - Testet maximale API Call Rate.
 Dieses Skript testet, wie viele API Calls pro Minute möglich sind,
 bevor Rate Limits (429) auftreten. Es hilft dabei, die optimale
 Rate für DSQ zu finden.
+
+GRADUELL ERHÖHT Worker-Anzahl bis Limit erreicht.
 """
 
 import sys
@@ -39,18 +41,18 @@ logger = logging.getLogger(__name__)
 
 # Test Configuration
 TEST_REGIONS = [
-    "us-central1",      # Aktuell konfiguriert
-    "europe-west3",     # Frankfurt (näher)
-    "europe-west4",     # Netherlands (Alternative)
+    "us-central1",     # Iowa (Standard - alle Modelle verfügbar)
+    "europe-west3",     # Frankfurt (testen ob Modelle verfügbar)
 ]
 TEST_MODELS = [
-    "Google Gemini 2.5 Flash",  # Schnelleres Modell für Rate-Test
-    "Google Gemini 2.5 Pro",    # Pro-Modell prüfen
+    "Google Gemini 2.5 Pro",      # Pro-Modell
+    "Google Gemini 2.5 Flash",    # Flash-Modell
+    "Google Gemini 2.0 Flash-Lite",  # Flash-Lite 2.0 (testen ob verfügbar)
 ]
 
-# Rate Test Configuration
-MAX_WORKERS_RANGE = [5, 10, 15, 20]  # Test verschiedene Worker-Anzahlen
-TARGET_REQUESTS = 100  # Anzahl Requests für Test
+# Rate Test Configuration - GRADUELL ERHÖHEN bis wir an Limits kommen
+MAX_WORKERS_RANGE = [15, 20, 25, 30, 40, 50]  # Test mit steigenden Worker-Anzahlen bis Limit erreicht
+TARGET_REQUESTS = 100  # Mehr Requests für aussagekräftigeren Test
 TEST_DURATION_SECONDS = 60  # Test-Dauer in Sekunden
 
 
@@ -86,8 +88,31 @@ class RateLimitTester:
             # Try to get model info
             model_config = self.config.get('models', {}).get(self.model_name, {})
             if not model_config:
-                logger.error(f"Model {self.model_name} not found in config")
-                return False
+                # CRITICAL: Try direct model ID if not in config (for Flash-Lite)
+                if "Flash-Lite" in self.model_name:
+                    logger.info(f"[INFO] Model {self.model_name} not in config - trying direct model ID...")
+                    # Try gemini-2.0-flash-lite directly
+                    if "2.0" in self.model_name:
+                        model_config = {
+                            "id": "gemini-2.0-flash-lite",
+                            "access_method": "gemini",
+                            "location": self.region,
+                            "generation_config": {
+                                "temperature": 0.0,
+                                "top_p": 0.1,
+                                "top_k": 1,
+                                "max_output_tokens": 8192,
+                                "candidate_count": 1,
+                                "response_mime_type": "application/json"
+                            }
+                        }
+                        logger.info(f"[INFO] Using direct model config: gemini-2.0-flash-lite")
+                    else:
+                        logger.error(f"Model {self.model_name} not found in config and no direct ID available")
+                        return False
+                else:
+                    logger.error(f"Model {self.model_name} not found in config")
+                    return False
             
             # Try a simple API call
             test_prompt = "Return JSON: {\"test\": true}"
@@ -101,13 +126,20 @@ class RateLimitTester:
             
             if result:
                 logger.info(f"[OK] Model {self.model_name} is available in {self.region}")
+                # Store model_config for later use
+                self._model_config = model_config
                 return True
             else:
                 logger.warning(f"[WARNING] Model {self.model_name} returned None in {self.region}")
                 return False
                 
         except Exception as e:
-            logger.error(f"[FAIL] Model {self.model_name} not available in {self.region}: {e}")
+            error_msg = str(e).lower()
+            # Check if it's a "not found" error (model not available) vs other error
+            if "not found" in error_msg or "404" in error_msg:
+                logger.error(f"[FAIL] Model {self.model_name} not available in {self.region}: {e}")
+            else:
+                logger.warning(f"[WARNING] Error testing {self.model_name} in {self.region}: {e}")
             return False
     
     def test_rate_limit(self, max_workers: int, target_rpm: int) -> Dict[str, Any]:
@@ -133,8 +165,26 @@ class RateLimitTester:
             max_requests_per_minute=target_rpm * 2
         )
         
-        # Get model config
-        model_config = self.config.get('models', {}).get(self.model_name, {})
+        # Get model config (use stored one from availability test)
+        model_config = getattr(self, '_model_config', None)
+        if not model_config:
+            model_config = self.config.get('models', {}).get(self.model_name, {})
+            if not model_config and "Flash-Lite" in self.model_name and "2.0" in self.model_name:
+                # Direct config for Flash-Lite 2.0
+                model_config = {
+                    "id": "gemini-2.0-flash-lite",
+                    "access_method": "gemini",
+                    "location": self.region,
+                    "generation_config": {
+                        "temperature": 0.0,
+                        "top_p": 0.1,
+                        "top_k": 1,
+                        "max_output_tokens": 8192,
+                        "candidate_count": 1,
+                        "response_mime_type": "application/json"
+                    }
+                }
+        
         if not model_config:
             return {
                 'success': False,
@@ -225,9 +275,11 @@ class RateLimitTester:
                                 f"(RPM: {current_rpm:.1f}, Rate Limits: {rate_limit_errors})"
                             )
                         
-                        # Stop if too many rate limits
-                        if rate_limit_errors > 10:
-                            logger.warning(f"Too many rate limits ({rate_limit_errors}) - stopping test")
+                        # Stop if too many rate limits (CRITICAL: erhöht für aggressiveren Test)
+                        # Wir wollen sehen wo das echte Limit ist
+                        rate_limit_threshold = min(20, TARGET_REQUESTS * 0.4)  # 40% oder max 20
+                        if rate_limit_errors > rate_limit_threshold:
+                            logger.warning(f"Too many rate limits ({rate_limit_errors} > {rate_limit_threshold}) - stopping test")
                             # Cancel remaining futures
                             for f in futures:
                                 f.cancel()
@@ -264,7 +316,7 @@ class RateLimitTester:
             'rate_limit_rate': rate_limit_errors / (completed_requests + failed_requests) if (completed_requests + failed_requests) > 0 else 0,
             'avg_request_duration': sum(request_times) / len(request_times) if request_times else 0,
             'dsq_status': dsq_status,
-            'success': rate_limit_errors < 5  # Test successful if < 5 rate limits
+            'success': rate_limit_errors < (completed_requests + failed_requests) * 0.1  # Test successful if < 10% rate limits
         }
         
         logger.info(f"\n{'=' * 80}")
@@ -282,10 +334,10 @@ class RateLimitTester:
 def main():
     """Main function to run rate limit tests."""
     print("=" * 80)
-    print("API RATE LIMIT TEST")
+    print("API RATE LIMIT TEST - GRADUELL ERHÖHEN")
     print("=" * 80)
-    print("This script tests the maximum API call rate for different regions and configurations.")
-    print("It will help you find the optimal rate for DSQ optimization.")
+    print("This script tests the maximum API call rate by gradually increasing workers.")
+    print("It will stop automatically when rate limits exceed 50%.")
     print("=" * 80)
     print()
     
@@ -301,33 +353,64 @@ def main():
     for region in TEST_REGIONS:
         for model_name in TEST_MODELS:
             try:
+                logger.info(f"\n{'#' * 80}")
+                logger.info(f"TESTING: {model_name} in {region}")
+                logger.info(f"{'#' * 80}\n")
+                
                 tester = RateLimitTester(region, model_name)
                 tester.setup_llm_client()
                 
                 # Test model availability
                 if not tester.test_model_availability():
-                    logger.warning(f"Skipping {model_name} in {region} - not available")
-                    continue
+                    logger.warning(f"[SKIP] {model_name} in {region} - not available")
+                    # Still add a result entry for tracking
+                    all_results.append({
+                        'region': region,
+                        'model': model_name,
+                        'available': False,
+                        'error': 'Model not available in this region'
+                    })
+                    continue  # Skip to next model/region combination
                 
-                # Test different worker configurations
+                # Test different worker configurations - GRADUELL ERHÖHEN
                 for max_workers in MAX_WORKERS_RANGE:
                     # Calculate target RPM based on workers
                     # Assume ~1 request per second per worker = 60 RPM per worker
                     target_rpm = max_workers * 60
                     
+                    logger.info(f"\n{'=' * 80}")
+                    logger.info(f"Testing: {model_name} - {region} - {max_workers} workers - Target: {target_rpm} RPM")
+                    logger.info(f"{'=' * 80}\n")
+                    
                     # Test rate limit
                     result = tester.test_rate_limit(max_workers, target_rpm)
+                    result['available'] = True
                     all_results.append(result)
                     
-                    # Wait between tests to avoid interference
-                    time.sleep(5)
+                    # Check if we hit rate limits - wenn ja, nächste Worker-Anzahl wird wahrscheinlich auch Probleme haben
+                    rate_limit_rate = result.get('rate_limit_rate', 0)
+                    if rate_limit_rate > 0.2:  # Mehr als 20% Rate Limits
+                        logger.warning(f"[WARNING] High rate limit rate ({rate_limit_rate:.2%}) - might be near limit")
                     
-                    # Stop if we found a good configuration
-                    if result['success'] and result['rate_limit_rate'] < 0.05:
-                        logger.info(f"[OK] Found good configuration: {region} - {max_workers} workers - {target_rpm} RPM")
+                    if rate_limit_rate > 0.5:  # Mehr als 50% Rate Limits - definitiv am Limit
+                        logger.error(f"[LIMIT REACHED] Rate limit rate {rate_limit_rate:.2%} - stopping further worker increases for this model/region")
+                        # Don't test higher worker counts if we're clearly at the limit
+                        break
+                    
+                    # Wait between tests to avoid interference
+                    time.sleep(10)  # Längere Pause zwischen Tests
+                    
+                    # Log progress
+                    logger.info(f"\n[PROGRESS] Completed: {max_workers} workers - RPM: {result.get('actual_rpm', 0):.1f} - Rate Limits: {result.get('rate_limit_errors', 0)}")
             
             except Exception as e:
                 logger.error(f"Error testing {region} - {model_name}: {e}", exc_info=True)
+                all_results.append({
+                    'region': region,
+                    'model': model_name,
+                    'available': False,
+                    'error': str(e)
+                })
                 continue
     
     # Save results
@@ -354,17 +437,31 @@ def main():
     print("TEST SUMMARY")
     print("=" * 80)
     
-    # Find best configuration
-    successful_results = [r for r in all_results if r.get('success', False)]
+    # Find best configuration for each model/region
+    successful_results = [r for r in all_results if r.get('success', False) and r.get('available', True)]
+    unavailable = [r for r in all_results if r.get('available', False)]
+    
+    if unavailable:
+        print("\n[UNAVAILABLE MODELS/REGIONS:]")
+        for r in unavailable:
+            print(f"  {r['model']} in {r['region']}: {r.get('error', 'Not available')}")
+    
     if successful_results:
-        best_result = max(successful_results, key=lambda x: x.get('actual_rpm', 0))
-        print(f"\n[BEST] Best Configuration:")
-        print(f"  Region: {best_result['region']}")
-        print(f"  Model: {best_result['model']}")
-        print(f"  Max Workers: {best_result['max_workers']}")
-        print(f"  Actual RPM: {best_result['actual_rpm']:.1f}")
-        print(f"  Rate Limit Rate: {best_result['rate_limit_rate']:.2%}")
-        print(f"  Success Rate: {best_result['success_rate']:.2%}")
+        print("\n[BEST CONFIGURATIONS BY MODEL/REGION:]")
+        # Group by model and region
+        from collections import defaultdict
+        by_model_region = defaultdict(list)
+        for r in successful_results:
+            key = f"{r['model']} - {r['region']}"
+            by_model_region[key].append(r)
+        
+        for key, results in by_model_region.items():
+            # Find max RPM
+            best = max(results, key=lambda x: x.get('actual_rpm', 0))
+            print(f"\n  {key}:")
+            print(f"    Max RPM: {best.get('actual_rpm', 0):.1f} ({best.get('max_workers', '?')} workers)")
+            print(f"    Rate Limit Rate: {best.get('rate_limit_rate', 0):.2%}")
+            print(f"    Success Rate: {best.get('success_rate', 0):.2%}")
     else:
         print("\n[WARNING] No successful configurations found!")
     
@@ -373,4 +470,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
