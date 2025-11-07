@@ -237,6 +237,7 @@ class ParameterTuningRunner:
         })
         
         # Load strategy config
+        config = self.config_service.get_raw_config()
         strategies = config.get('strategies', {})
         strategy_config = strategies.get(STRATEGY, {})
         
