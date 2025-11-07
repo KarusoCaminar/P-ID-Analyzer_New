@@ -81,7 +81,7 @@ class LLMClient:
         logger.info(f"Multi-level cache initialized at: {cache_path} (Memory={memory_cache_size}, Disk={cache_size_gb}GB)")
         
         # Timeout executor
-        max_workers_timeout = config.get('logic_parameters', {}).get('llm_timeout_executor_workers', 1)
+        max_workers_timeout = config.get('logic_parameters', {}).get('llm_timeout_executor_workers', 8)  # CRITICAL: Increased from 1 to 8 for better parallelism
         self.timeout_executor = ThreadPoolExecutor(max_workers=max_workers_timeout)
         
         # Intelligent error handling

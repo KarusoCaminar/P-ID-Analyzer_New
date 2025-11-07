@@ -558,7 +558,7 @@ training_camp:
     - graph_completion_isolated_node_distance: 0.03 # Kleinere Distanz für "echt isoliert"
     - min_quality_to_keep_bbox: 0.7 # Höhere Anforderung an BBox-Qualität
     - visual_symbol_similarity_threshold: 0.85 # Strengere visuelle Ähnlichkeit
-    - llm_timeout_executor_workers: 4 # Weniger parallele LLM-Worker, wenn Stabilitätsprobleme auftreten
+    - llm_timeout_executor_workers: 8  # CRITICAL: Erhöht von 4 auf 8 für bessere Parallelität
     - analysis_batch_size: 2 # Kleinere Batch-Größe für LLM-Aufrufe
     - precise_bbox_morph_kernel_size: 5 # Größerer Kernel für präzisere BBox-Extraktion
     - precise_bbox_min_component_area: 50 # Größerer Mindestbereich für Konturen

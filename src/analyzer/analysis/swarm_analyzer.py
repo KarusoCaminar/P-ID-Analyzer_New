@@ -788,11 +788,12 @@ class SwarmAnalyzer(IAnalyzer):
             return []
         
         # Process tiles with controlled concurrency to limit API overload
-        max_workers = self.logic_parameters.get('llm_executor_workers', 4)
+        max_workers = self.logic_parameters.get('llm_executor_workers', 15)
         timeout = self.logic_parameters.get('llm_default_timeout', 300)  # Erhöht von 120 auf 300
         
-        # Limit max_workers to prevent API overload (max 6 concurrent requests für Stabilität)
-        max_workers = min(max_workers, 6)  # Reduziert von 8 auf 6 für bessere Stabilität
+        # CRITICAL: Increased max_workers for better parallelism (was already successful with 10-15)
+        # DSQ optimizer will handle rate limiting automatically
+        max_workers = min(max_workers, 15)  # CRITICAL: Increased from 6 to 15 for better performance
         
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             future_to_tile = {}
