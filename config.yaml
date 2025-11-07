@@ -325,7 +325,7 @@ logic_parameters:
   
   # PHASE 5.4: Maximale Anzahl paralleler Worker für die Analyse-Aufrufe (max 8-10 für API-Limits)
   # Increased from 4 to 6 for faster processing (Uni-Bilder optimization)
-  llm_executor_workers: 4  # Reduziert von 6 auf 4 für bessere Stabilität bei komplexen P&IDs
+  llm_executor_workers: 15  # CRITICAL: Erhöht von 4 auf 15 für bessere Parallelität (war schon erfolgreich)
   
   # ----------------------------------------------------
   # Phase 1: BBox Validierung & Verfeinerung

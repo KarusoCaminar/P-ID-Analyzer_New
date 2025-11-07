@@ -1628,8 +1628,8 @@ Be honest and strict in your evaluation."""
                 return None
         
         # Process connections in parallel with optimized worker count
-        config_workers = self.active_logic_parameters.get('llm_executor_workers', 4)
-        max_workers = min(config_workers, len(connections), 8)  # Cap at 8 for performance
+        config_workers = self.active_logic_parameters.get('llm_executor_workers', 15)
+        max_workers = min(config_workers, len(connections), 15)  # CRITICAL: Increased from 8 to 15 for better performance
         polyline_results = []
         
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
