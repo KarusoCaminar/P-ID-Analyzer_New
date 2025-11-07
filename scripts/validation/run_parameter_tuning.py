@@ -504,18 +504,23 @@ class ParameterTuningRunner:
             executor.shutdown(wait=False, cancel_futures=True)
             raise
         
+        # Get best result (thread-safe) - must be inside try block scope
+        final_best_result = None
+        with best_result_lock:
+            final_best_result = best_result
+        
         # Final summary
         self.logger.info("\n" + "=" * 80)
         self.logger.info("PARAMETER TUNING COMPLETE")
         self.logger.info("=" * 80)
         
-        if best_result:
-            self.logger.info(f"\n🏆 BEST PARAMETERS:")
-            self.logger.info(f"   adaptive_threshold_factor: {best_result['parameters']['adaptive_threshold_factor']}")
-            self.logger.info(f"   adaptive_threshold_min: {best_result['parameters']['adaptive_threshold_min']}")
-            self.logger.info(f"   adaptive_threshold_max: {best_result['parameters']['adaptive_threshold_max']}")
-            self.logger.info(f"\n📊 BEST RESULTS:")
-            kpis = best_result.get('kpis', {})
+        if final_best_result:
+            self.logger.info(f"\n[BEST] BEST PARAMETERS:")
+            self.logger.info(f"   adaptive_threshold_factor: {final_best_result['parameters']['adaptive_threshold_factor']}")
+            self.logger.info(f"   adaptive_threshold_min: {final_best_result['parameters']['adaptive_threshold_min']}")
+            self.logger.info(f"   adaptive_threshold_max: {final_best_result['parameters']['adaptive_threshold_max']}")
+            self.logger.info(f"\n[BEST] BEST RESULTS:")
+            kpis = final_best_result.get('kpis', {})
             self.logger.info(f"   Connection F1: {kpis.get('connection_f1', 0.0):.4f}")
             self.logger.info(f"   Element F1: {kpis.get('element_f1', 0.0):.4f}")
             self.logger.info(f"   Quality Score: {kpis.get('quality_score', 0.0):.2f}")
@@ -526,7 +531,7 @@ class ParameterTuningRunner:
         self.save_results()
         
         # Save summary
-        self.save_summary(best_result)
+        self.save_summary(final_best_result)
         
         self.stop_live_monitoring()
     
