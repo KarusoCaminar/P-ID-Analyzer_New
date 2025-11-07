@@ -583,6 +583,14 @@ class LLMClient:
                 # Record success for circuit breaker
                 self.retry_handler.record_success()
                 
+                # CRITICAL: Record success for DSQ optimizer (adaptive rate limiting)
+                try:
+                    from src.analyzer.ai.dsq_optimizer import get_dsq_optimizer
+                    dsq_optimizer = get_dsq_optimizer()
+                    dsq_optimizer.record_success()
+                except Exception as e:
+                    logger.debug(f"Failed to record success in DSQ optimizer: {e}")
+                
                 # Save circuit breaker state
                 try:
                     circuit_state_path = self.debug_dir / 'circuit-state.json'
@@ -619,6 +627,14 @@ class LLMClient:
                 
                 # Record failure
                 self.retry_handler.record_failure(e)
+                
+                # Record failure for DSQ optimizer (timeout is not a rate limit)
+                try:
+                    from src.analyzer.ai.dsq_optimizer import get_dsq_optimizer
+                    dsq_optimizer = get_dsq_optimizer()
+                    dsq_optimizer.record_failure(is_rate_limit=False)
+                except Exception as dsq_error:
+                    logger.debug(f"Failed to record failure in DSQ optimizer: {dsq_error}")
                 
                 # Update error data
                 api_error_data = {
