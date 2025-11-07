@@ -637,8 +637,7 @@ class SwarmAnalyzer(IAnalyzer):
         Returns:
             Merged graph with refined elements
         """
-        from src.utils.graph_utils import GraphSynthesizer, SynthesizerConfig
-        from src.utils.type_utils import calculate_iou
+        from src.utils.graph_utils import GraphSynthesizer, SynthesizerConfig, calculate_iou
         
         # Combine elements and connections
         all_elements = coarse_graph.get('elements', []) + refine_graph.get('elements', [])
