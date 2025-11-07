@@ -579,8 +579,8 @@ class LineExtractor:
         PRIORITÄT 1: Adaptive Thresholds (Verbesserung 4)
         Replaces fixed 50px threshold with adaptive value.
         
-        Uses gap_bridging_threshold_px from config.yaml if available,
-        otherwise calculates adaptive value based on image size.
+        Uses parameters from config.yaml -> logic_parameters -> line_extraction for parameter tuning.
+        Falls back to gap_bridging_threshold_px or calculated adaptive value.
         
         Args:
             img_width: Image width in pixels
@@ -595,23 +595,24 @@ class LineExtractor:
             logger.debug(f"Using config gap_bridging_threshold_px: {gap_threshold}px")
             return float(gap_threshold)
         
-        # Fallback: Calculate adaptive threshold based on image size
+        # Read parameters from line_extraction config (for parameter tuning)
+        line_extraction_params = self.logic_parameters.get('line_extraction', {})
+        factor = line_extraction_params.get('adaptive_threshold_factor', 0.02)  # Default: 2% of diagonal
+        min_val = line_extraction_params.get('adaptive_threshold_min', 25)  # Default: 25px
+        max_val = line_extraction_params.get('adaptive_threshold_max', 150)  # Default: 150px
+        
+        # Calculate adaptive threshold based on image size
         # Calculate image diagonal (approximate scale)
         diagonal = np.sqrt(img_width ** 2 + img_height ** 2)
         
-        # Base threshold: 2% of diagonal (INCREASED from 0.5% to bridge mask gap)
-        # This scales with image size:
-        # - Small image (1000px): ~28px threshold
-        # - Medium image (4000px): ~112px threshold
-        # - Large image (8000px): ~224px threshold (clamped to 150px)
-        # CRITICAL FIX: Increased to bridge the gap created by _mask_symbols margin
-        adaptive_threshold = diagonal * 0.02
+        # Base threshold: factor% of diagonal (configurable for parameter tuning)
+        adaptive_threshold = diagonal * factor
         
-        # Clamp to reasonable range (min 25px to exceed mask margin, max 150px)
-        # CRITICAL FIX: Increased min from 10px to 25px to ensure mask gap is bridged
-        adaptive_threshold = max(25, min(150, adaptive_threshold))
+        # Clamp to reasonable range (configurable min/max)
+        adaptive_threshold = max(min_val, min(max_val, adaptive_threshold))
         
-        logger.debug(f"Adaptive threshold: {adaptive_threshold:.1f}px (image: {img_width}x{img_height})")
+        logger.debug(f"Adaptive threshold: {adaptive_threshold:.1f}px (image: {img_width}x{img_height}, "
+                    f"factor={factor}, min={min_val}, max={max_val})")
         return adaptive_threshold
     
     def _bridge_gaps(
