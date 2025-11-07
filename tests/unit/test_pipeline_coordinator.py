@@ -74,6 +74,12 @@ def mock_config_service():
     mock_config.prompts.monolithic_analysis_prompt_template = "Test monolith prompt"
     mock_config.prompts.polyline_extraction_user_prompt = "Test polyline prompt"
     mock_config.prompts.general_system_prompt = "Test system prompt"
+    mock_config.model_dump = Mock(return_value={
+        'paths': {
+            'learning_db': 'training_data/learning_db.json',
+            'learned_symbols_images_dir': 'training_data/viewshot_examples'
+        }
+    })
     config_service.get_config = Mock(return_value=mock_config)
     config_service.get_raw_config = Mock(return_value={
         'paths': {

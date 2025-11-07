@@ -103,9 +103,9 @@ class TestCGMGenerator:
         # Should have connectors if connections exist
         assert isinstance(cgm_data["connectors"], list)
     
-    def test_generate_cgm_network_returns_code(self, cgm_generator):
-        """Test that generate_cgm_network returns Python code."""
-        network_code = cgm_generator.generate_cgm_network()
+    def test_generate_cgm_python_code_returns_code(self, cgm_generator):
+        """Test that generate_cgm_python_code returns Python code."""
+        network_code = cgm_generator.generate_cgm_python_code()
         
         assert network_code is not None
         assert isinstance(network_code, str)
