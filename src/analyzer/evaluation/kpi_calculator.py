@@ -547,8 +547,52 @@ class KPICalculator:
         # Map truth connections to analysis connection space
         analysis_connections = {(c.get('from_id'), c.get('to_id')) for c in analysis_data.get('connections', [])
                                if c.get('from_id') and c.get('to_id')}
-        truth_connections = {(c.get('from_id'), c.get('to_id')) for c in truth_data.get('connections', [])
-                            if c.get('from_id') and c.get('to_id')}
+        
+        # CRITICAL FIX: Extract connections from ground truth (handle multiple formats)
+        def extract_connections_from_truth(truth_connections_list: List[Dict[str, Any]]) -> Set[Tuple[str, str]]:
+            """
+            Extract connections from ground truth format.
+            
+            Handles two formats:
+            1. Simple format: {"from_id": "P-201", "to_id": "Fv-3-3040"}
+            2. Converter ports format: {
+                "from_converter_ports": [{"unit_name": "P-201", "port": "Out"}],
+                "to_converter_ports": [{"unit_name": "Fv-3-3040", "port": "In"}]
+            }
+            
+            Also handles merge/split nodes (multiple from/to ports).
+            """
+            connections = set()
+            
+            for conn in truth_connections_list:
+                # Format 1: Simple format (from_id, to_id)
+                if 'from_id' in conn and 'to_id' in conn:
+                    from_id = conn.get('from_id')
+                    to_id = conn.get('to_id')
+                    if from_id and to_id:
+                        connections.add((from_id, to_id))
+                
+                # Format 2: Converter ports format
+                elif 'from_converter_ports' in conn and 'to_converter_ports' in conn:
+                    from_ports = conn.get('from_converter_ports', [])
+                    to_ports = conn.get('to_converter_ports', [])
+                    
+                    # Extract unit names from ports
+                    from_ids = [p.get('unit_name') for p in from_ports if p.get('unit_name')]
+                    to_ids = [p.get('unit_name') for p in to_ports if p.get('unit_name')]
+                    
+                    # Handle multiple from/to (merges/splits)
+                    # Each from_id connects to each to_id
+                    for from_id in from_ids:
+                        for to_id in to_ids:
+                            if from_id and to_id:
+                                connections.add((from_id, to_id))
+            
+            return connections
+        
+        truth_connections = extract_connections_from_truth(truth_data.get('connections', []))
+        
+        logger.info(f"Extracted {len(truth_connections)} connections from ground truth (format: {'converter_ports' if any('from_converter_ports' in c for c in truth_data.get('connections', [])) else 'simple'})")
         
         # CRITICAL FIX: Improve ID mapping with fuzzy matching for connections
         # Create reverse mapping (analysis_id -> truth_id) and fuzzy match function
