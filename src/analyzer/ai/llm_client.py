@@ -387,15 +387,17 @@ class LLMClient:
         base_timeout = int(base_timeout_raw) if base_timeout_raw is not None else 240
         max_retries = self.config.get('logic_parameters', {}).get('llm_max_retries', 3)
         
-        # Adjust timeout based on payload size
-        # Large payloads should have shorter timeouts to fail fast
+        # CRITICAL FIX: Adjust timeout based on payload size
+        # Large payloads need MORE time, not less! (Previous logic was backwards)
         total_prompt_length = len(system_prompt) + len(user_prompt)
         if total_prompt_length > 100000:  # >100KB
-            timeout_seconds = min(base_timeout, 30)  # Max 30s for very large payloads
-            logger.warning(f"Very large payload ({total_prompt_length} chars) - using reduced timeout: {timeout_seconds}s")
+            # Very large payloads need significantly more time
+            timeout_seconds = int(base_timeout * 1.8)  # 1.8x timeout for very large payloads
+            logger.info(f"Very large payload ({total_prompt_length} chars) - using increased timeout: {timeout_seconds}s (base: {base_timeout}s)")
         elif total_prompt_length > 50000:  # >50KB
-            timeout_seconds = min(base_timeout, 60)  # Max 60s for large payloads
-            logger.info(f"Large payload ({total_prompt_length} chars) - using reduced timeout: {timeout_seconds}s")
+            # Large payloads need more time
+            timeout_seconds = int(base_timeout * 1.4)  # 1.4x timeout for large payloads
+            logger.info(f"Large payload ({total_prompt_length} chars) - using increased timeout: {timeout_seconds}s (base: {base_timeout}s)")
         else:
             timeout_seconds = base_timeout
         

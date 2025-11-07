@@ -201,23 +201,25 @@ class ErrorClassifier:
         error_type_str = str(type(error).__name__).lower()
         
         # Rate limit errors (temporary, but need longer backoff)
-        if any(term in error_message for term in ["rate limit", "429", "quota", "quota exceeded"]):
+        # CRITICAL: Exponential backoff for rate limits (60s → 120s → 240s)
+        if any(term in error_message for term in ["rate limit", "429", "quota", "quota exceeded", "resource_exhausted"]):
             return ErrorInfo(
                 error_type=ErrorType.RATE_LIMIT,
                 error_message=str(error),
                 retryable=True,
-                backoff_seconds=60.0,  # Longer backoff for rate limits
+                backoff_seconds=120.0,  # Increased from 60s to 120s for rate limits (exponential: 120s → 240s → 480s)
                 max_retries=5
             )
         
         # Timeout errors (temporary, exponential backoff)
+        # CRITICAL: Exponential backoff for timeouts (10s → 20s → 40s)
         if any(term in error_message for term in ["timeout", "timed out", "deadline exceeded"]):
             return ErrorInfo(
                 error_type=ErrorType.TIMEOUT,
                 error_message=str(error),
                 retryable=True,
-                backoff_seconds=5.0,
-                max_retries=3
+                backoff_seconds=10.0,  # Increased from 5s to 10s for timeouts (exponential: 10s → 20s → 40s)
+                max_retries=5  # Increased from 3 to 5 retries for timeouts
             )
         
         # Network errors (temporary, exponential backoff)
