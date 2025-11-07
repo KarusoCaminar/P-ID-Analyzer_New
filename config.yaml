@@ -93,30 +93,31 @@ models:
       max_output_tokens: 8192   # Standard-Limit für Gemini 2.0 Modelle
       candidate_count: 1        # Single response für Geschwindigkeit
       response_mime_type: "application/json"  # Erzwingt strukturierte JSON-Ausgabe
-  "Google Gemini 2.0 Flash-Lite":
-    id: "gemini-2.0-flash-lite"
-    access_method: "gemini"
-    location: "europe-west3"  # CRITICAL: Changed to Europe-West3 (Frankfurt) for better latency
-    description: "Kosteneffizientes Modell mit großem Kontextfenster. Optimiert für präzise Symbolerkennung."
-    generation_config:
-      temperature: 0.0          # Deterministic - maximale Präzision für Symbolerkennung
-      top_p: 0.1                # Very deterministic - schmale Verteilung für konsistente Ergebnisse
-      top_k: 1                  # Most deterministic - nur Top-Token für maximale Konsistenz
-      max_output_tokens: 8192   # Standard-Limit für Gemini 2.0 Modelle
-      candidate_count: 1        # Single response für Geschwindigkeit
-      response_mime_type: "application/json"  # Erzwingt strukturierte JSON-Ausgabe
-  "Google Gemini 2.5 Flash-Lite (Preview)":
-    id: "gemini-2.5-flash-lite-preview-06-17"
-    access_method: "gemini"
-    location: "europe-west3"  # CRITICAL: Changed to Europe-West3 (Frankfurt) for better latency
-    description: "Neuestes, extrem schnelles Preview-Modell, ideal für schnelle Iterationen. Optimiert für präzise Symbolerkennung."
-    generation_config:
-      temperature: 0.0          # Deterministic - maximale Präzision für Symbolerkennung
-      top_p: 0.1                # Very deterministic - schmale Verteilung für konsistente Ergebnisse
-      top_k: 1                  # Most deterministic - nur Top-Token für maximale Konsistenz
-      max_output_tokens: 8192   # Gemini 2.5 Flash-Lite Standard-Limit (nicht 65530)
-      candidate_count: 1        # Single response für Geschwindigkeit
-      response_mime_type: "application/json"  # Erzwingt strukturierte JSON-Ausgabe
+  # DISABLED: Flash-Lite Modelle sind aktuell nicht verfügbar in Vertex AI
+  # "Google Gemini 2.0 Flash-Lite":
+  #   id: "gemini-2.0-flash-lite"
+  #   access_method: "gemini"
+  #   location: "europe-west3"  # CRITICAL: Changed to Europe-West3 (Frankfurt) for better latency
+  #   description: "Kosteneffizientes Modell mit großem Kontextfenster. Optimiert für präzise Symbolerkennung."
+  #   generation_config:
+  #     temperature: 0.0          # Deterministic - maximale Präzision für Symbolerkennung
+  #     top_p: 0.1                # Very deterministic - schmale Verteilung für konsistente Ergebnisse
+  #     top_k: 1                  # Most deterministic - nur Top-Token für maximale Konsistenz
+  #     max_output_tokens: 8192   # Standard-Limit für Gemini 2.0 Modelle
+  #     candidate_count: 1        # Single response für Geschwindigkeit
+  #     response_mime_type: "application/json"  # Erzwingt strukturierte JSON-Ausgabe
+  # "Google Gemini 2.5 Flash-Lite (Preview)":
+  #   id: "gemini-2.5-flash-lite-preview-06-17"
+  #   access_method: "gemini"
+  #   location: "europe-west3"  # CRITICAL: Changed to Europe-West3 (Frankfurt) for better latency
+  #   description: "Neuestes, extrem schnelles Preview-Modell, ideal für schnelle Iterationen. Optimiert für präzise Symbolerkennung."
+  #   generation_config:
+  #     temperature: 0.0          # Deterministic - maximale Präzision für Symbolerkennung
+  #     top_p: 0.1                # Very deterministic - schmale Verteilung für konsistente Ergebnisse
+  #     top_k: 1                  # Most deterministic - nur Top-Token für maximale Konsistenz
+  #     max_output_tokens: 8192   # Gemini 2.5 Flash-Lite Standard-Limit (nicht 65530)
+  #     candidate_count: 1        # Single response für Geschwindigkeit
+  #     response_mime_type: "application/json"  # Erzwingt strukturierte JSON-Ausgabe
   "Google Gemini 1.5 Flash":
     id: "gemini-1.5-flash"
     access_method: "gemini"
