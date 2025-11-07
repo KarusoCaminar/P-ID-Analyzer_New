@@ -50,8 +50,8 @@ TEST_MODELS = [
     "Google Gemini 2.0 Flash-Lite",  # Flash-Lite 2.0 (testen ob verfügbar)
 ]
 
-# Rate Test Configuration - GRADUELL ERHÖHEN bis wir an Limits kommen
-MAX_WORKERS_RANGE = [15, 20, 25, 30, 40, 50]  # Test mit steigenden Worker-Anzahlen bis Limit erreicht
+# Rate Test Configuration - AGGRESSIV BIS ZUM LIMIT
+MAX_WORKERS_RANGE = [15, 20, 25, 30, 40, 50, 60, 75, 100]  # Test bis 100 Workers - MAXIMUM SPEED!
 TARGET_REQUESTS = 100  # Mehr Requests für aussagekräftigeren Test
 TEST_DURATION_SECONDS = 60  # Test-Dauer in Sekunden
 
@@ -392,10 +392,13 @@ def main():
                     if rate_limit_rate > 0.2:  # Mehr als 20% Rate Limits
                         logger.warning(f"[WARNING] High rate limit rate ({rate_limit_rate:.2%}) - might be near limit")
                     
-                    if rate_limit_rate > 0.5:  # Mehr als 50% Rate Limits - definitiv am Limit
+                    # CRITICAL: Stoppe nur wenn wirklich am Limit (höhere Toleranz für aggressiven Test)
+                    if rate_limit_rate > 0.7:  # Mehr als 70% Rate Limits - definitiv am Limit
                         logger.error(f"[LIMIT REACHED] Rate limit rate {rate_limit_rate:.2%} - stopping further worker increases for this model/region")
                         # Don't test higher worker counts if we're clearly at the limit
                         break
+                    elif rate_limit_rate > 0.5:  # 50-70% Rate Limits - Warnung, aber weitermachen
+                        logger.warning(f"[WARNING] High rate limit rate ({rate_limit_rate:.2%}) - continuing test to find absolute limit")
                     
                     # Wait between tests to avoid interference
                     time.sleep(10)  # Längere Pause zwischen Tests
