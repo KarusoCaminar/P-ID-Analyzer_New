@@ -60,9 +60,11 @@ TEST_GROUND_TRUTH_SIMPLE = project_root / "training_data" / "simple_pids" / "Ein
 TEST_GROUND_TRUTH_COMPLEX = project_root / "training_data" / "complex_pids" / "page_1_original_truth_cgm.json"
 
 # Parameter ranges to test (from PARAMETER_TUNING_GUIDE.md)
-ADAPTIVE_THRESHOLD_FACTORS = [0.01, 0.02, 0.03, 0.05, 0.07, 0.10]
-ADAPTIVE_THRESHOLD_MINS = [15, 20, 25, 30, 40]
-ADAPTIVE_THRESHOLD_MAXS = [100, 125, 150, 200, 250]
+# REDUCED RANGE for faster testing - can be expanded after finding optimal range
+ADAPTIVE_THRESHOLD_FACTORS = [0.01, 0.02, 0.03, 0.05]  # Reduced from 6 to 4 values
+ADAPTIVE_THRESHOLD_MINS = [20, 25, 30]  # Reduced from 5 to 3 values
+ADAPTIVE_THRESHOLD_MAXS = [125, 150, 200]  # Reduced from 5 to 3 values
+# Total combinations: 4 × 3 × 3 = 36 (instead of 150)
 
 # Strategy to use for parameter tuning
 STRATEGY = "simple_whole_image"  # Best for simple P&IDs, fast and accurate
@@ -245,10 +247,16 @@ class ParameterTuningRunner:
             raise ValueError(f"Strategy '{STRATEGY}' not found!")
         
         # Prepare parameters
+        # CRITICAL: For parameter tuning, disable expensive features to speed up tests
         params_override = {
             **strategy_config,
             'test_name': f"param_tune_{adaptive_threshold_factor}_{adaptive_threshold_min}_{adaptive_threshold_max}",
-            'test_description': f"Parameter tuning: factor={adaptive_threshold_factor}, min={adaptive_threshold_min}, max={adaptive_threshold_max}"
+            'test_description': f"Parameter tuning: factor={adaptive_threshold_factor}, min={adaptive_threshold_min}, max={adaptive_threshold_max}",
+            # Disable expensive features for faster parameter tuning
+            'use_self_correction_loop': False,  # CRITICAL: Disable self-correction (saves ~50 minutes per test)
+            'use_polyline_refinement': False,   # Disable polyline refinement (not needed for threshold testing)
+            'use_predictive_completion': False, # Disable predictive completion (not needed for threshold testing)
+            'use_visual_feedback': False        # Disable visual feedback (not needed for threshold testing)
         }
         
         # Load ground truth
