@@ -54,9 +54,19 @@ class SymbolLibrary:
         if self.images_dir:
             self.images_dir.mkdir(parents=True, exist_ok=True)
         
-        # Load symbols from learning database if available
-        if learning_db_path:
-            self.load_from_learning_db()
+        # CRITICAL FIX: Lazy loading - don't load symbols from learning_db at startup
+        # This prevents blocking during PipelineCoordinator initialization
+        # Symbols will be loaded on-demand when needed
+        self._symbols_loaded = False
+        if learning_db_path and learning_db_path.exists():
+            file_size_mb = learning_db_path.stat().st_size / (1024 * 1024)
+            if file_size_mb > 1.0:  # > 1MB - use lazy loading
+                logger.info(f"Large learning database detected ({file_size_mb:.2f} MB) - using lazy loading for symbols")
+                # Don't load now - will load on-demand
+            else:
+                # Small database - load normally
+                self.load_from_learning_db()
+                self._symbols_loaded = True
     
     def add_symbol(
         self,
@@ -138,6 +148,9 @@ class SymbolLibrary:
         Returns:
             List of tuples (symbol_id, similarity_score, metadata)
         """
+        # CRITICAL FIX: Lazy load symbols if not loaded
+        self._ensure_symbols_loaded()
+        
         # CRITICAL FIX: Thread-safe read access to embeddings
         with self.lock:
             if not self.embeddings:
@@ -194,6 +207,9 @@ class SymbolLibrary:
     
     def get_symbol(self, symbol_id: str) -> Optional[Dict[str, Any]]:
         """Get symbol data by ID."""
+        # CRITICAL FIX: Lazy load symbols if not loaded
+        self._ensure_symbols_loaded()
+        
         # CRITICAL FIX: Thread-safe read access
         with self.lock:
             return self.symbols.get(symbol_id)
@@ -213,15 +229,31 @@ class SymbolLibrary:
     
     def get_all_symbols(self) -> Dict[str, Dict[str, Any]]:
         """Get all symbols in the library."""
+        # CRITICAL FIX: Lazy load symbols if not loaded
+        self._ensure_symbols_loaded()
+        
         # CRITICAL FIX: Thread-safe read access
         with self.lock:
             return self.symbols.copy()
     
     def get_symbol_count(self) -> int:
         """Get the number of symbols in the library."""
+        # CRITICAL FIX: Lazy load symbols if not loaded
+        self._ensure_symbols_loaded()
+        
         # CRITICAL FIX: Thread-safe read access
         with self.lock:
             return len(self.symbols)
+    
+    def _ensure_symbols_loaded(self) -> None:
+        """Lazy load symbols if not already loaded."""
+        if getattr(self, '_symbols_loaded', False):
+            return
+        
+        if self.learning_db_path and self.learning_db_path.exists():
+            logger.info("Lazy loading symbols from learning database...")
+            self.load_from_learning_db()
+            self._symbols_loaded = True
     
     def load_from_learning_db(self) -> int:
         """

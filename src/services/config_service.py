@@ -62,7 +62,7 @@ class AppConfig(BaseModel):
     # Pydantic automatically converts dicts to these model types
     paths: PathsConfig = Field(default_factory=PathsConfig)
     models: Dict[str, ModelConfig] = Field(default_factory=dict)
-    strategies: Dict[str, Dict[str, str]] = Field(default_factory=dict)
+    strategies: Dict[str, Dict[str, Any]] = Field(default_factory=dict)  # Changed from str to Any to accept bool/int/str
     logic_parameters: LogicParameters = Field(default_factory=LogicParameters)
     prompts: PromptsConfig = Field(default_factory=PromptsConfig)
 

@@ -62,10 +62,19 @@ class KnowledgeManager:
         self._solution_vector_keys: List[str] = []
         self._solution_vector_solutions: List[Dict[str, Any]] = []
         
-        # Thread safety
+        # Thread safety - CRITICAL FIX: Use non-blocking lock initialization
         file_lock_timeout = config.get('logic_parameters', {}).get('db_file_lock_timeout', 15)
         self.lock_path = str(self.learning_db_path) + ".lock"
-        self.db_process_lock = FileLock(self.lock_path, timeout=file_lock_timeout)
+        try:
+            # Try to create lock without blocking
+            self.db_process_lock = FileLock(self.lock_path, timeout=1.0)  # Short timeout
+        except Exception as e:
+            logger.warning(f"Could not initialize file lock: {e} - continuing without lock")
+            # Create dummy lock that doesn't block
+            class DummyLock:
+                def __enter__(self): return self
+                def __exit__(self, *args): pass
+            self.db_process_lock = DummyLock()
         self.db_thread_lock = threading.Lock()
         
         # Load knowledge
@@ -93,25 +102,56 @@ class KnowledgeManager:
             self.config_library = []
     
     def _load_learning_database(self) -> None:
-        """Load learning database and build vector indices."""
+        """Load learning database and load vector indices."""
         logger.info(f"Loading learning database from: {self.learning_db_path}")
+        
+        # CRITICAL FIX P1: Lazy loading - only load structure, not full content
+        # Full database will be loaded on-demand when needed (e.g., when saving)
         try:
             if self.learning_db_path.exists():
-                with open(self.learning_db_path, 'r', encoding='utf-8') as f:
-                    self.learning_database = json.load(f)
-                logger.info("Learning database loaded successfully")
+                file_size_mb = self.learning_db_path.stat().st_size / (1024 * 1024)
+                
+                # If database is large, use lazy loading
+                if file_size_mb > 1.0:  # > 1MB
+                    logger.info(f"Large database detected ({file_size_mb:.2f} MB) - using lazy loading")
+                    # Initialize empty structure - will load on-demand
+                    self._init_empty_database()
+                    self._learning_db_file_size = file_size_mb
+                    self._learning_db_loaded = False  # Flag for lazy loading
+                else:
+                    # Small database - load normally
+                    with open(self.learning_db_path, 'r', encoding='utf-8') as f:
+                        self.learning_database = json.load(f)
+                    logger.info("Learning database loaded successfully")
+                    self._learning_db_loaded = True
             else:
                 logger.warning("Learning database not found. Creating new database")
                 self._init_empty_database()
+                self._learning_db_loaded = True  # Empty DB is "loaded"
         except Exception as e:
             logger.error(f"Error loading learning database: {e}", exc_info=True)
             self._init_empty_database()
+            self._learning_db_loaded = False
         
         # Ensure all required keys exist
         self._ensure_database_structure()
         
-        # Build vector indices
-        self._build_vector_index()
+        # Load vector indices (fast - from pre-built .npy files, or skip if not exist)
+        self._build_vector_index()  # Actually loads, doesn't build
+    
+    def _lazy_load_learning_database(self) -> None:
+        """Lazy load learning database if not already loaded."""
+        if getattr(self, '_learning_db_loaded', True):
+            return
+        
+        logger.info("Lazy loading learning database...")
+        try:
+            with open(self.learning_db_path, 'r', encoding='utf-8') as f:
+                self.learning_database = json.load(f)
+            self._learning_db_loaded = True
+            logger.info("Learning database lazy loaded successfully")
+        except Exception as e:
+            logger.error(f"Error lazy loading learning database: {e}", exc_info=True)
     
     def _init_empty_database(self) -> None:
         """Initialize empty learning database structure."""
@@ -135,53 +175,78 @@ class KnowledgeManager:
         self.learning_database.setdefault("learned_visual_corrections", {})
     
     def _build_vector_index(self) -> None:
-        """Build in-memory vector indices for fast similarity search."""
-        logger.info("Building vector indices...")
+        """Load pre-built vector indices for fast similarity search."""
+        logger.info("Loading pre-built vector indices...")
         
-        # Build solution index (text-based embeddings)
-        learned_solutions = self.learning_database.get("learned_solutions", {})
-        vectors_as_lists = []
-        solution_keys_filtered = []
-        solution_values_filtered = []
+        # Indices directory
+        indices_dir = self.learning_db_path.parent / "indices"
         
-        if learned_solutions:
-            for key, solution_data in learned_solutions.items():
-                embedding = solution_data.get("problem_embedding")
-                if isinstance(embedding, list) and all(isinstance(x, (int, float)) for x in embedding):
-                    vectors_as_lists.append(embedding)
-                    solution_keys_filtered.append(key)
-                    solution_values_filtered.append(solution_data)
+        try:
+            # Load solution index (skip if not exists - will work without it)
+            solution_index_file = indices_dir / "solution_index.npy"
+            solution_keys_file = indices_dir / "solution_keys.json"
             
-            if vectors_as_lists:
-                self._solution_vector_index = np.array(vectors_as_lists, dtype=np.float32)
-                self._solution_vector_keys = solution_keys_filtered
-                self._solution_vector_solutions = solution_values_filtered
-                logger.info(f"Solution vector index built with {len(self._solution_vector_index)} entries")
+            if solution_index_file.exists() and solution_keys_file.exists():
+                try:
+                    logger.info("Loading solution vector index...")
+                    # Load without memory mapping for faster access
+                    self._solution_vector_index = np.load(solution_index_file)
+                    with open(solution_keys_file, 'r', encoding='utf-8') as f:
+                        self._solution_vector_keys = json.load(f)
+                    # CRITICAL FIX: Don't load solution values from learning_db here - that's slow!
+                    # Load them on-demand when actually needed
+                    self._solution_vector_solutions = []  # Will be loaded on-demand
+                    logger.info(f"✓ Loaded {len(self._solution_vector_keys)} solution vectors")
+                except Exception as e:
+                    logger.warning(f"Error loading solution index: {e}")
+                    self._solution_vector_index = None
+                    self._solution_vector_keys = []
+                    self._solution_vector_solutions = []
             else:
+                logger.debug("Solution vector index not found - similarity search will be slower")
                 self._solution_vector_index = None
                 self._solution_vector_keys = []
                 self._solution_vector_solutions = []
-        
-        # Build symbol index (visual embeddings)
-        symbol_library = self.learning_database.get("symbol_library", {})
-        if symbol_library:
-            valid_symbols_data = [
-                data for data in symbol_library.values()
-                if isinstance(data, dict) and isinstance(data.get("visual_embedding"), list)
-            ]
-            if valid_symbols_data:
-                self._symbol_vector_ids = [
-                    sym_id for sym_id, data in symbol_library.items()
-                    if isinstance(data, dict) and isinstance(data.get("visual_embedding"), list)
-                ]
-                self._symbol_vector_data = valid_symbols_data
-                vectors_as_lists_symbols = [data["visual_embedding"] for data in valid_symbols_data]
-                self._symbol_vector_index = np.array(vectors_as_lists_symbols, dtype=np.float32)
-                logger.info(f"Symbol vector index built with {len(self._symbol_vector_index)} entries")
+            
+            # Load symbol index (skip if not exists - will work without it)
+            symbol_index_file = indices_dir / "symbol_index.npy"
+            symbol_ids_file = indices_dir / "symbol_ids.json"
+            
+            if symbol_index_file.exists() and symbol_ids_file.exists():
+                try:
+                    logger.info("Loading symbol vector index...")
+                    # Load without memory mapping for faster access
+                    self._symbol_vector_index = np.load(symbol_index_file)
+                    with open(symbol_ids_file, 'r', encoding='utf-8') as f:
+                        self._symbol_vector_ids = json.load(f)
+                    # CRITICAL FIX: Don't load symbol data from learning_db here - that's slow!
+                    # Load them on-demand when actually needed
+                    self._symbol_vector_data = []  # Will be loaded on-demand
+                    logger.info(f"✓ Loaded {len(self._symbol_vector_ids)} symbol vectors")
+                except Exception as e:
+                    logger.warning(f"Error loading symbol index: {e}")
+                    self._symbol_vector_index = None
+                    self._symbol_vector_ids = []
+                    self._symbol_vector_data = []
             else:
+                logger.debug("Symbol vector index not found - similarity search will be slower")
                 self._symbol_vector_index = None
                 self._symbol_vector_ids = []
                 self._symbol_vector_data = []
+            
+            # Log summary
+            if self._solution_vector_index is not None or self._symbol_vector_index is not None:
+                logger.info("Vector indices loaded successfully")
+            else:
+                logger.info("No vector indices found - system will work but similarity search will be slower")
+                logger.info("To build indices: python scripts/training/build_vector_indices.py")
+            
+        except Exception as e:
+            logger.error(f"Error loading vector indices: {e}", exc_info=True)
+            # Set to None on error to prevent crashes
+            self._solution_vector_index = None
+            self._symbol_vector_index = None
+            logger.warning("Continuing without vector indices - similarity search will be slower")
     
     def _convert_bbox_to_dict(self, obj: Any) -> Any:
         """
@@ -246,6 +311,9 @@ class KnowledgeManager:
     
     def save_learning_database(self) -> None:
         """Save learning database thread-safe and process-safe."""
+        # CRITICAL FIX: Lazy load before saving if not loaded
+        self._lazy_load_learning_database()
+        
         logger.info(f"Saving learning database to: {self.learning_db_path}")
         try:
             with self.db_process_lock:
@@ -719,10 +787,13 @@ class KnowledgeManager:
         # Pattern 3: Rebuild vector index AFTER releasing locks (slow operation)
         # This prevents holding locks during expensive index building
         try:
-            self._build_vector_index()
+            # CRITICAL FIX M1: Do NOT rebuild vector index here
+            # Vector indices are pre-built and should be rebuilt separately using build_vector_indices.py
+            # This prevents O(n) rebuilds during bulk operations
+            logger.info("Corrections added. Run 'python scripts/training/build_vector_indices.py' to update indices.")
         except Exception as e:
-            logger.warning(f"Error rebuilding vector index after adding corrections: {e}")
-            # Don't fail the entire operation if index rebuild fails
+            logger.warning(f"Error in bulk_add_corrections: {e}")
+            # Don't fail the entire operation
         
         return correction_ids if 'correction_ids' in locals() else []
     

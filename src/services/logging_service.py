@@ -15,7 +15,7 @@ class LoggingService:
     @staticmethod
     def setup_logging(
         log_level: int = logging.INFO,
-        log_file: Optional[Path] = None,
+        log_file: Optional[Path | str] = None,
         format_string: Optional[str] = None
     ) -> None:
         """
@@ -23,7 +23,7 @@ class LoggingService:
         
         Args:
             log_level: Logging level (default: INFO)
-            log_file: Optional log file path
+            log_file: Optional log file path (Path object or string)
             format_string: Optional custom format string
         """
         if format_string is None:
@@ -47,6 +47,9 @@ class LoggingService:
         
         # File handler if specified
         if log_file:
+            # Konvertiere String zu Path falls nötig
+            if isinstance(log_file, str):
+                log_file = Path(log_file)
             log_file.parent.mkdir(parents=True, exist_ok=True)
             file_handler = logging.FileHandler(log_file, encoding='utf-8')
             file_handler.setFormatter(formatter)

@@ -516,6 +516,21 @@ training_camp:
 
   # Strategien und Modelle, die im Trainingslager getestet werden
   strategies_and_models_to_test:
+  # Strategie 0: Simple Whole Image - Beste Strategie für einfache P&IDs
+  simple_whole_image:
+    meta_model: "Google Gemini 2.5 Pro"  # CRITICAL: Pro für Legend/Metadata (Phase 1)
+    monolith_model: "Google Gemini 2.5 Pro"  # CRITICAL: Starkes Modell für ganzes Bild
+    detail_model: "Google Gemini 2.5 Pro"  # Pro für bessere Präzision
+    polyline_model: "Google Gemini 2.5 Flash"  # Flash ausreichend (CV-basiert)
+    correction_model: "Google Gemini 2.5 Pro"  # Pro für besseres Reasoning
+    critic_model_name: "Google Gemini 2.5 Pro"  # Pro für bessere Kritik
+    use_swarm_analysis: false  # CRITICAL: Swarm deaktiviert (Tiles sind bei einfachen Bildern schlechter)
+    use_monolith_analysis: true  # Monolith aktiviert
+    use_fusion: false  # Keine Fusion nötig (nur Monolith)
+    use_self_correction_loop: true  # Self-Correction für Qualität
+    use_normalization_engine: true  # Wichtig, um "S" -> "pipe" zu fangen
+    monolith_whole_image: true  # CRITICAL: Analysiere ganzes Bild, keine Quadranten
+  
   # Strategie 1: Der schnelle Allrounder
   default_flash:
     meta_model: "Google Gemini 2.5 Flash"

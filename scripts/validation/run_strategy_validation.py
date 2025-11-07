@@ -23,6 +23,10 @@ sys.path.insert(0, str(project_root))
 
 from src.utils.json_encoder import PydanticJSONEncoder, json_dump_safe
 
+# CRITICAL: Live Log Monitoring
+sys.path.insert(0, str(project_root))
+from scripts.utils.live_log_monitor import monitor_test_logs, LiveLogMonitor
+
 # Load .env file automatically (CRITICAL: Lädt GCP-Credentials automatisch)
 try:
     from src.utils.env_loader import load_env_automatically
@@ -248,6 +252,19 @@ def run_test(
     logger.info(f"Log-Datei: {test_log_file}")
     logger.info("=" * 60)
     
+    # CRITICAL: Start Live Log Monitoring (während des Tests)
+    log_monitor = None
+    try:
+        log_monitor = monitor_test_logs(
+            log_file=test_log_file,
+            test_name=test_name,
+            output_callback=None  # Use default (print to stdout)
+        )
+        logger.info(f"[LiveLog] Monitoring gestartet: {test_log_file}")
+    except Exception as e:
+        logger.warning(f"[LiveLog] Fehler beim Starten des Live-Monitors: {e}")
+        log_monitor = None
+    
     # 1. Pipeline ausführen
     try:
         # --- KORREKTUR: Circuit Breaker vor jedem Test zurücksetzen ---
@@ -295,6 +312,12 @@ def run_test(
         logger.info(f"Ergebnisse gespeichert: {results_file}")
         
     except Exception as e:
+        # CRITICAL: Stop log monitor on error
+        if log_monitor:
+            log_monitor.flush()
+            log_monitor.stop()
+            logger.info(f"[LiveLog] Monitoring beendet (Fehler)")
+        
         logger.error(f"Test '{test_name}' FEHLGESCHLAGEN während der Ausführung: {e}", exc_info=True)
         return {
             "element_f1": 0.0, 
@@ -322,6 +345,12 @@ def run_test(
             recall_elements = kpis.get('element_recall', 0.0)
             precision_connections = kpis.get('connection_precision', 0.0)
             recall_connections = kpis.get('connection_recall', 0.0)
+            
+            # CRITICAL: Flush remaining log lines before stopping monitor
+            if log_monitor:
+                log_monitor.flush()
+                log_monitor.stop()
+                logger.info(f"[LiveLog] Monitoring beendet")
             
             logger.info(f"[DONE] Test '{test_name}' Abgeschlossen:")
             logger.info(f"  Element F1:    {f1_elements:.4f}")

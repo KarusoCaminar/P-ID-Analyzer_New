@@ -77,6 +77,8 @@ def json_dump_safe(obj: Any, fp: Any, **kwargs) -> None:
         fp: File-like object to write to
         **kwargs: Additional arguments for json.dump
     """
+    # CRITICAL FIX: Remove ensure_ascii from kwargs if present to avoid duplicate argument
+    kwargs.pop('ensure_ascii', None)
     json.dump(obj, fp, cls=PydanticJSONEncoder, ensure_ascii=False, **kwargs)
 
 
@@ -91,5 +93,7 @@ def json_dumps_safe(obj: Any, **kwargs) -> str:
     Returns:
         JSON string representation of the object
     """
+    # CRITICAL FIX: Remove ensure_ascii from kwargs if present to avoid duplicate argument
+    kwargs.pop('ensure_ascii', None)
     return json.dumps(obj, cls=PydanticJSONEncoder, ensure_ascii=False, **kwargs)
 
