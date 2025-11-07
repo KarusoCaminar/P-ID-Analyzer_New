@@ -64,11 +64,11 @@ class LineExtractor:
             
         Returns:
             Dictionary with:
-            - pipeline_lines: List of skeletonized line segments
+            - pipeline_lines: List of contour-based line segments
             - junctions: List of junction points (splits/merges)
             - line_segments: List of line segments with endpoints
         """
-            logger.info("=== Starting contour-based line extraction ===")
+        logger.info("=== Starting contour-based line extraction ===")
         
         try:
             # Read image
