@@ -48,10 +48,13 @@ except (ImportError, Exception) as e:
 # Configuration
 TEST_IMAGE_SIMPLE = project_root / "training_data" / "simple_pids" / "Einfaches P&I.png"
 TEST_IMAGE_COMPLEX = project_root / "training_data" / "complex_pids" / "page_1_original.png"
+TEST_IMAGE_UNI = project_root / "training_data" / "complex_pids" / "Verfahrensfließbild_Uni.png"
 TEST_GROUND_TRUTH_SIMPLE = project_root / "training_data" / "simple_pids" / "Einfaches P&I_truth.json"
 TEST_GROUND_TRUTH_COMPLEX = project_root / "training_data" / "complex_pids" / "page_1_original_truth_cgm.json"
+TEST_GROUND_TRUTH_UNI = project_root / "training_data" / "complex_pids" / "Verfahrensfließbild_Uni_truth.json"
 
-STRATEGY = "simple_whole_image"
+# Use hybrid_fusion for maximum quality on complex images
+STRATEGY = "hybrid_fusion"  # Swarm + Monolith + Fusion for best results
 OUTPUT_BASE_DIR = project_root / "outputs" / "live_test"
 
 
@@ -359,5 +362,68 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    import argparse
+    
+    parser = argparse.ArgumentParser(description="Run full pipeline test with live log monitoring")
+    parser.add_argument(
+        "--image",
+        choices=["simple", "complex", "uni"],
+        default="uni",
+        help="Test image to use (default: uni)"
+    )
+    parser.add_argument(
+        "--strategy",
+        type=str,
+        default=None,
+        help="Strategy to use (default: hybrid_fusion)"
+    )
+    
+    args = parser.parse_args()
+    
+    # Select test image
+    if args.image == "simple":
+        test_image = TEST_IMAGE_SIMPLE
+        test_truth = TEST_GROUND_TRUTH_SIMPLE
+        use_complex = False
+    elif args.image == "complex":
+        test_image = TEST_IMAGE_COMPLEX
+        test_truth = TEST_GROUND_TRUTH_COMPLEX
+        use_complex = True
+    else:  # uni
+        test_image = TEST_IMAGE_UNI
+        test_truth = TEST_GROUND_TRUTH_UNI
+        use_complex = True
+    
+    # Override strategy if provided
+    test_strategy = STRATEGY
+    if args.strategy:
+        test_strategy = args.strategy
+    
+    print("=" * 80)
+    print("FULL PIPELINE TEST - LIVE MONITORING")
+    print("=" * 80)
+    print(f"Test Image: {test_image.name}")
+    print(f"Strategy: {test_strategy}")
+    print(f"Ground Truth: {test_truth.name if test_truth.exists() else 'Not found'}")
+    print(f"DSQ Optimization: ENABLED")
+    print("=" * 80)
+    print()
+    
+    # Update STRATEGY for runner
+    import scripts.validation.run_live_test as run_live_test_module
+    run_live_test_module.STRATEGY = test_strategy
+    
+    runner = LiveTestRunner(test_image, test_truth, use_complex=use_complex)
+    
+    try:
+        runner.setup_services()
+        runner.start_live_monitoring()
+        runner.run_test()
+    except KeyboardInterrupt:
+        runner.logger.warning("\nTest interrupted by user")
+        runner.cleanup()
+    except Exception as e:
+        runner.logger.error(f"Fatal error: {e}", exc_info=True)
+        runner.cleanup()
+        sys.exit(1)
 
