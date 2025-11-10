@@ -18,13 +18,9 @@ import os
 import logging
 import time
 import copy
-import random
-import threading
 from pathlib import Path
 from datetime import datetime
 from typing import Dict, Any, Optional, List, Tuple
-from concurrent.futures import ThreadPoolExecutor, as_completed, Future
-from queue import Queue
 
 # Projekt-Root zum Pfad hinzufügen
 project_root = Path(__file__).parent.parent.parent
@@ -76,11 +72,6 @@ STRATEGY = "simple_whole_image"  # Best for simple P&IDs, fast and accurate
 # Output directory
 OUTPUT_BASE_DIR = project_root / "outputs" / "parameter_tuning"
 
-# Worker Pool Configuration
-# CRITICAL: Concurrency limiting to avoid rate limits
-# Start with 5 workers, increase to 10 after quota increase
-MAX_WORKERS = 5  # Max parallel API requests (adjust based on your quota: 60 req/min = 5 workers, 300 req/min = 10-15 workers)
-
 
 class ParameterTuningRunner:
     """Parameter tuning runner with live log monitoring."""
@@ -124,12 +115,8 @@ class ParameterTuningRunner:
         self.knowledge_manager = None
         self.coordinator = None
         
-        # Results storage (thread-safe)
+        # Results storage
         self.results = []
-        self.results_lock = threading.Lock()
-        
-        # Worker pool configuration
-        self.max_workers = MAX_WORKERS
     
     def setup_services(self):
         """Initialize all services."""
@@ -219,9 +206,7 @@ class ParameterTuningRunner:
         self,
         adaptive_threshold_factor: float,
         adaptive_threshold_min: int,
-        adaptive_threshold_max: int,
-        test_number: int = 0,
-        total_tests: int = 0
+        adaptive_threshold_max: int
     ) -> Dict[str, Any]:
         """
         Run a single test with specific parameters.
@@ -361,21 +346,13 @@ class ParameterTuningRunner:
             }
     
     def run_parameter_tuning(self):
-        """
-        Run parameter tuning with grid search using Worker Pool.
-        
-        CRITICAL: Uses ThreadPoolExecutor with concurrency limiting to avoid rate limits.
-        - MAX_WORKERS parallel workers (default: 5)
-        - Exponential backoff handled by LLMClient
-        - Thread-safe results storage
-        """
+        """Run parameter tuning with grid search."""
         self.logger.info("=" * 80)
-        self.logger.info("STARTING PARAMETER TUNING - WORKER POOL MODE")
+        self.logger.info("STARTING PARAMETER TUNING")
         self.logger.info("=" * 80)
         self.logger.info(f"Test Image: {self.test_image}")
         self.logger.info(f"Strategy: {STRATEGY}")
         self.logger.info(f"Output Directory: {self.output_dir}")
-        self.logger.info(f"Max Workers: {self.max_workers} (parallel API requests)")
         self.logger.info("=" * 80)
         
         # Check if image exists
@@ -384,143 +361,54 @@ class ParameterTuningRunner:
             self.stop_live_monitoring()
             sys.exit(1)
         
-        # Grid search over parameters - create test jobs
+        # Grid search over parameters
         total_tests = len(ADAPTIVE_THRESHOLD_FACTORS) * len(ADAPTIVE_THRESHOLD_MINS) * len(ADAPTIVE_THRESHOLD_MAXS)
         self.logger.info(f"\nTotal parameter combinations to test: {total_tests}")
-        self.logger.info(f"Worker Pool: {self.max_workers} parallel workers")
-        self.logger.info("Exponential backoff: Enabled (handled by LLMClient)")
         self.logger.info("This may take a while...\n")
         
-        # Create test jobs queue
-        test_jobs = []
         test_count = 0
+        best_result = None
+        best_connection_f1 = -1.0
+        
+        # Test each combination
         for factor in ADAPTIVE_THRESHOLD_FACTORS:
             for min_val in ADAPTIVE_THRESHOLD_MINS:
                 for max_val in ADAPTIVE_THRESHOLD_MAXS:
                     test_count += 1
-                    test_jobs.append({
-                        'test_number': test_count,
-                        'factor': factor,
-                        'min_val': min_val,
-                        'max_val': max_val
-                    })
-        
-        # Thread-safe shared state
-        best_result_lock = threading.Lock()
-        best_result = None
-        best_connection_f1 = -1.0
-        completed_tests = 0
-        completed_lock = threading.Lock()
-        
-        def process_test_job(job: Dict[str, Any]) -> Dict[str, Any]:
-            """Process a single test job (called by worker thread)."""
-            nonlocal best_result, best_connection_f1, completed_tests
-            
-            test_num = job['test_number']
-            factor = job['factor']
-            min_val = job['min_val']
-            max_val = job['max_val']
-            
-            try:
-                # Run test with exponential backoff (handled by LLMClient)
-                result = self.run_test_with_parameters(
-                    factor, min_val, max_val, test_num, total_tests
-                )
-                
-                # Thread-safe results storage
-                with self.results_lock:
+                    self.logger.info(f"\n{'=' * 80}")
+                    self.logger.info(f"TEST {test_count}/{total_tests}")
+                    self.logger.info(f"{'=' * 80}")
+                    
+                    result = self.run_test_with_parameters(factor, min_val, max_val)
                     self.results.append(result)
-                
-                # Check if this is the best result (thread-safe)
-                if result.get('success') and result.get('kpis'):
-                    connection_f1 = result['kpis'].get('connection_f1', 0.0)
-                    with best_result_lock:
+                    
+                    # Check if this is the best result
+                    if result.get('success') and result.get('kpis'):
+                        connection_f1 = result['kpis'].get('connection_f1', 0.0)
                         if connection_f1 > best_connection_f1:
                             best_connection_f1 = connection_f1
                             best_result = result
                             self.logger.info(f"\n⭐ NEW BEST RESULT! Connection F1: {connection_f1:.4f}")
                             self.logger.info(f"   Parameters: factor={factor}, min={min_val}, max={max_val}")
-                
-                # Update progress (thread-safe)
-                with completed_lock:
-                    completed_tests += 1
-                    progress = (completed_tests / total_tests) * 100
-                    self.logger.info(f"\n[PROGRESS] {completed_tests}/{total_tests} tests completed ({progress:.1f}%)")
-                
-                # Save intermediate results (thread-safe via lock)
-                self.save_results()
-                
-                return result
-                
-            except Exception as e:
-                self.logger.error(f"\n[FAIL] TEST {test_num} FAILED: {e}", exc_info=True)
-                error_result = {
-                    'parameters': {
-                        'adaptive_threshold_factor': factor,
-                        'adaptive_threshold_min': min_val,
-                        'adaptive_threshold_max': max_val
-                    },
-                    'strategy': STRATEGY,
-                    'error': str(e),
-                    'success': False,
-                    'test_number': test_num
-                }
-                with self.results_lock:
-                    self.results.append(error_result)
-                with completed_lock:
-                    completed_tests += 1
-                self.save_results()
-                return error_result
-        
-        # Execute tests with Worker Pool (ThreadPoolExecutor)
-        start_time = time.time()
-        self.logger.info(f"\n[WORKER POOL] Starting {self.max_workers} workers...")
-        self.logger.info(f"[WORKER POOL] Processing {total_tests} tests in parallel (max {self.max_workers} concurrent)\n")
-        
-        try:
-            with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-                # Submit all jobs to executor
-                future_to_job = {
-                    executor.submit(process_test_job, job): job
-                    for job in test_jobs
-                }
-                
-                # Process completed futures
-                for future in as_completed(future_to_job):
-                    job = future_to_job[future]
-                    try:
-                        result = future.result()
-                        # Result already processed in process_test_job
-                    except Exception as e:
-                        self.logger.error(f"\n[FAIL] Job {job['test_number']} raised exception: {e}", exc_info=True)
-            
-            end_time = time.time()
-            total_duration = (end_time - start_time) / 60.0
-            self.logger.info(f"\n[WORKER POOL] All tests completed in {total_duration:.2f} minutes")
-            self.logger.info(f"[WORKER POOL] Average time per test: {total_duration / total_tests:.2f} minutes")
-            
-        except KeyboardInterrupt:
-            self.logger.warning("\n[WORKER POOL] Interrupted by user - stopping workers...")
-            executor.shutdown(wait=False, cancel_futures=True)
-            raise
-        
-        # Get best result (thread-safe) - must be inside try block scope
-        final_best_result = None
-        with best_result_lock:
-            final_best_result = best_result
+                    
+                    # Save intermediate results
+                    self.save_results()
+                    
+                    # Small delay between tests
+                    time.sleep(2)
         
         # Final summary
         self.logger.info("\n" + "=" * 80)
         self.logger.info("PARAMETER TUNING COMPLETE")
         self.logger.info("=" * 80)
         
-        if final_best_result:
-            self.logger.info(f"\n[BEST] BEST PARAMETERS:")
-            self.logger.info(f"   adaptive_threshold_factor: {final_best_result['parameters']['adaptive_threshold_factor']}")
-            self.logger.info(f"   adaptive_threshold_min: {final_best_result['parameters']['adaptive_threshold_min']}")
-            self.logger.info(f"   adaptive_threshold_max: {final_best_result['parameters']['adaptive_threshold_max']}")
-            self.logger.info(f"\n[BEST] BEST RESULTS:")
-            kpis = final_best_result.get('kpis', {})
+        if best_result:
+            self.logger.info(f"\n🏆 BEST PARAMETERS:")
+            self.logger.info(f"   adaptive_threshold_factor: {best_result['parameters']['adaptive_threshold_factor']}")
+            self.logger.info(f"   adaptive_threshold_min: {best_result['parameters']['adaptive_threshold_min']}")
+            self.logger.info(f"   adaptive_threshold_max: {best_result['parameters']['adaptive_threshold_max']}")
+            self.logger.info(f"\n📊 BEST RESULTS:")
+            kpis = best_result.get('kpis', {})
             self.logger.info(f"   Connection F1: {kpis.get('connection_f1', 0.0):.4f}")
             self.logger.info(f"   Element F1: {kpis.get('element_f1', 0.0):.4f}")
             self.logger.info(f"   Quality Score: {kpis.get('quality_score', 0.0):.2f}")
@@ -531,59 +419,43 @@ class ParameterTuningRunner:
         self.save_results()
         
         # Save summary
-        self.save_summary(final_best_result)
+        self.save_summary(best_result)
         
         self.stop_live_monitoring()
     
     def save_results(self):
-        """Save results to JSON file (thread-safe)."""
+        """Save results to JSON file."""
         results_file = self.output_manager.get_data_path("parameter_tuning_results.json")
-        
-        # Thread-safe: Copy results list while holding lock
-        with self.results_lock:
-            results_copy = copy.deepcopy(self.results)
-        
         with open(results_file, 'w', encoding='utf-8') as f:
             json_dump_safe({
                 'timestamp': datetime.now().isoformat(),
                 'strategy': STRATEGY,
                 'test_image': str(self.test_image),
-                'total_tests': len(results_copy),
-                'completed_tests': sum(1 for r in results_copy if 'success' in r),
-                'failed_tests': sum(1 for r in results_copy if not r.get('success', True)),
-                'results': results_copy
+                'total_tests': len(self.results),
+                'results': self.results
             }, f, indent=2, ensure_ascii=False)
         
-        # Don't log every save (too verbose with worker pool)
-        # self.logger.info(f"Results saved to: {results_file}")
+        self.logger.info(f"Results saved to: {results_file}")
     
     def save_summary(self, best_result: Optional[Dict[str, Any]]):
-        """Save summary report (thread-safe)."""
+        """Save summary report."""
         summary_file = self.output_manager.get_data_path("parameter_tuning_summary.json")
-        
-        # Thread-safe: Copy results list while holding lock
-        with self.results_lock:
-            results_copy = copy.deepcopy(self.results)
         
         summary = {
             'timestamp': datetime.now().isoformat(),
             'strategy': STRATEGY,
             'test_image': str(self.test_image),
-            'total_tests': len(results_copy),
-            'successful_tests': sum(1 for r in results_copy if r.get('success')),
-            'failed_tests': sum(1 for r in results_copy if not r.get('success')),
-            'worker_pool_config': {
-                'max_workers': self.max_workers,
-                'mode': 'parallel'
-            }
+            'total_tests': len(self.results),
+            'successful_tests': sum(1 for r in self.results if r.get('success')),
+            'failed_tests': sum(1 for r in self.results if not r.get('success')),
         }
         
         if best_result:
             summary['best_parameters'] = best_result['parameters']
             summary['best_kpis'] = best_result.get('kpis', {})
         
-        # Sort results by Connection F1-Score (use results_copy, not self.results)
-        successful_results = [r for r in results_copy if r.get('success') and r.get('kpis')]
+        # Sort results by Connection F1-Score
+        successful_results = [r for r in self.results if r.get('success') and r.get('kpis')]
         successful_results.sort(key=lambda x: x.get('kpis', {}).get('connection_f1', 0.0), reverse=True)
         
         summary['top_5_results'] = [
@@ -616,16 +488,12 @@ if __name__ == "__main__":
     runner = ParameterTuningRunner(test_image, test_truth, use_simple=USE_SIMPLE)
     
     print("=" * 80)
-    print("PARAMETER TUNING - WORKER POOL MODE")
+    print("PARAMETER TUNING - OPTIMIZED VERSION")
     print("=" * 80)
     total_combos = len(ADAPTIVE_THRESHOLD_FACTORS) * len(ADAPTIVE_THRESHOLD_MINS) * len(ADAPTIVE_THRESHOLD_MAXS)
     print(f"Total parameter combinations: {total_combos}")
-    print(f"Worker Pool: {MAX_WORKERS} parallel workers")
-    print(f"Estimated time: {total_combos * 5 / MAX_WORKERS:.1f}-{total_combos * 10 / MAX_WORKERS:.1f} minutes")
-    print(f"  (Sequential: 3-6 hours, Parallel: {total_combos * 5 / MAX_WORKERS:.1f}-{total_combos * 10 / MAX_WORKERS:.1f} minutes)")
+    print(f"Estimated time: 3-6 hours (5-10 minutes per test)")
     print(f"Self-Correction: DISABLED (faster, no circuit breaker issues)")
-    print(f"Exponential Backoff: ENABLED (handled by LLMClient)")
-    print(f"Rate Limiting: {MAX_WORKERS} concurrent requests max")
     print("=" * 80)
     print()
     

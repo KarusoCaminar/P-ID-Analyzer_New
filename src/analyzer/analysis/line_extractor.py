@@ -72,7 +72,22 @@ class LineExtractor:
         
         try:
             # Read image
-            img = cv2.imread(image_path)
+            # CRITICAL FIX: Handle Unicode paths (Windows encoding issue)
+            # cv2.imread doesn't handle Unicode paths on Windows properly
+            # Solution: Use numpy fromfile + cv2.imdecode for Unicode support
+            import numpy as np
+            try:
+                # Try direct path first (works for ASCII paths)
+                img = cv2.imread(image_path)
+                if img is None:
+                    # Fallback: Read file as bytes and decode (handles Unicode paths)
+                    with open(image_path, 'rb') as f:
+                        img_data = np.frombuffer(f.read(), np.uint8)
+                        img = cv2.imdecode(img_data, cv2.IMREAD_COLOR)
+            except Exception as e:
+                logger.error(f"Could not load image: {image_path} (Error: {e})")
+                return {'pipeline_lines': [], 'junctions': [], 'line_segments': []}
+            
             if img is None:
                 logger.error(f"Could not load image: {image_path}")
                 return {'pipeline_lines': [], 'junctions': [], 'line_segments': []}

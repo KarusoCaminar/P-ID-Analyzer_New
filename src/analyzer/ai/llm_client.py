@@ -478,6 +478,20 @@ class LLMClient:
                 # Parse response (now safe - validation passed)
                 parsed_response = self._parse_response(response, expected_json_keys)
                 
+                # CRITICAL FIX: Check if parsed_response is valid before returning
+                if parsed_response is None or (isinstance(parsed_response, dict) and not parsed_response):
+                    logger.warning(f"Parsed response is None or empty after parsing. Response type: {type(response)}, Response: {str(response)[:200] if response else 'None'}")
+                    # Try retry if attempts remaining
+                    if attempt < max_retries - 1:
+                        should_retry, backoff_seconds = self.retry_handler.should_retry(
+                            ValueError("Empty or invalid parsed response"), attempt, max_retries
+                        )
+                        if should_retry:
+                            time.sleep(backoff_seconds)
+                            continue
+                    # All retries exhausted - return None
+                    return None
+                
                 # ENHANCED LOGGING: Log response details
                 if response:
                     # Extract response text
@@ -1050,15 +1064,16 @@ class LLMClient:
         
         text = response.text.strip()
         
-        # Try to parse as JSON
+        # CRITICAL FIX: More robust JSON extraction - try multiple approaches
+        # Approach 1: Try direct JSON parse
         try:
             parsed = json.loads(text)
             if isinstance(parsed, dict):
-                # Validate expected keys
+                # Validate expected keys (but don't fail if missing)
                 if expected_json_keys:
                     missing = [k for k in expected_json_keys if k not in parsed]
                     if missing:
-                        logger.warning(f"Expected JSON keys missing: {missing}")
+                        logger.warning(f"Expected JSON keys missing: {missing} (but continuing anyway)")
                 return parsed
             elif isinstance(parsed, list):
                 # CRITICAL FIX: Handle parsed list from response.text
@@ -1066,18 +1081,59 @@ class LLMClient:
                 return convert_list_to_dict(parsed, expected_json_keys)
             return text
         except json.JSONDecodeError:
-            # Try to extract JSON from markdown code blocks
+            pass  # Try other approaches
+        
+        # Approach 2: Try to extract JSON from markdown code blocks
+        try:
             import re
-            json_match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', text, re.DOTALL)
-            if json_match:
+            # Try multiple regex patterns for markdown code blocks
+            patterns = [
+                r'```(?:json)?\s*(\{.*?\})\s*```',  # Standard markdown
+                r'```\s*(\{.*?\})\s*```',  # Without json tag
+                r'\{.*\}',  # Any JSON object (non-greedy)
+            ]
+            
+            for pattern in patterns:
+                json_match = re.search(pattern, text, re.DOTALL)
+                if json_match:
+                    try:
+                        parsed = json.loads(json_match.group(1))
+                        if isinstance(parsed, dict):
+                            if expected_json_keys:
+                                missing = [k for k in expected_json_keys if k not in parsed]
+                                if missing:
+                                    logger.warning(f"Expected JSON keys missing: {missing} (but continuing anyway)")
+                            return parsed
+                        elif isinstance(parsed, list):
+                            return convert_list_to_dict(parsed, expected_json_keys)
+                    except json.JSONDecodeError:
+                        continue  # Try next pattern
+            
+            # Approach 3: Try to find JSON object boundaries manually
+            # Find first { and last }
+            first_brace = text.find('{')
+            last_brace = text.rfind('}')
+            if first_brace >= 0 and last_brace > first_brace:
+                json_substring = text[first_brace:last_brace + 1]
                 try:
-                    parsed = json.loads(json_match.group(1))
-                    if isinstance(parsed, list):
+                    parsed = json.loads(json_substring)
+                    if isinstance(parsed, dict):
+                        if expected_json_keys:
+                            missing = [k for k in expected_json_keys if k not in parsed]
+                            if missing:
+                                logger.warning(f"Expected JSON keys missing: {missing} (but continuing anyway)")
+                        return parsed
+                    elif isinstance(parsed, list):
                         return convert_list_to_dict(parsed, expected_json_keys)
-                    return parsed
                 except json.JSONDecodeError:
                     pass
-            return text
+        except Exception as e:
+            logger.debug(f"Error in JSON extraction: {e}")
+        
+        # CRITICAL FIX: If all parsing fails, return empty dict but log detailed warning
+        logger.warning(f"Could not parse JSON from response.text. Text preview: {text[:500]}...")
+        logger.debug(f"Full response text length: {len(text)}")
+        return {}
     
     def get_image_embedding(self, image_input: Union[str, Image.Image]) -> Optional[List[float]]:
         """

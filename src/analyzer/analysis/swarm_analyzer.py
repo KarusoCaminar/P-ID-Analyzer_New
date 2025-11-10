@@ -472,11 +472,24 @@ class SwarmAnalyzer(IAnalyzer):
             # Merge coarse and refine results
             merged_graph = self._merge_coarse_refine(coarse_graph, refine_graph)
             
+            # CRITICAL FIX 2: Set source attribute for all elements and connections
+            for el in merged_graph.get('elements', []):
+                el['source'] = 'swarm'
+            for conn in merged_graph.get('connections', []):
+                conn['source'] = 'swarm'
+            
             logger.info(f"Two-Pass Pipeline complete: {len(merged_graph['elements'])} elements, {len(merged_graph['connections'])} connections")
             
             return merged_graph
         else:
             logger.info("No uncertain zones found. Using coarse results only.")
+            
+            # CRITICAL FIX 2: Set source attribute for all elements and connections
+            for el in coarse_graph.get('elements', []):
+                el['source'] = 'swarm'
+            for conn in coarse_graph.get('connections', []):
+                conn['source'] = 'swarm'
+            
             return coarse_graph
     
     # CRITICAL FIX 3: Removed _identify_uncertain_zones method
@@ -665,6 +678,12 @@ class SwarmAnalyzer(IAnalyzer):
         )
         
         merged_graph = synthesizer.synthesize()
+        
+        # CRITICAL FIX 2: Set source attribute for all elements and connections
+        for el in merged_graph.get('elements', []):
+            el['source'] = 'swarm'
+        for conn in merged_graph.get('connections', []):
+            conn['source'] = 'swarm'
         
         logger.info(f"Merged coarse and refine: {len(merged_graph['elements'])} elements, "
                    f"{len(merged_graph['connections'])} connections")
@@ -927,6 +946,12 @@ class SwarmAnalyzer(IAnalyzer):
                                 if 'confidence' not in conn:
                                     conn['confidence'] = tile_confidence_penalty
                                     logger.warning(f"Swarm tile connection '{conn.get('from_id', '?')} -> {conn.get('to_id', '?')}' missing confidence - applying penalty (0.1)")
+                            
+                            # CRITICAL FIX 2: Set source attribute for all elements and connections
+                            for el in elements:
+                                el['source'] = 'swarm'
+                            for conn in connections:
+                                conn['source'] = 'swarm'
                         
                         raw_results.append({
                             'tile_coords': tile['coords'],

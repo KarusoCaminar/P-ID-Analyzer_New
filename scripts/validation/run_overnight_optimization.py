@@ -69,11 +69,13 @@ TEST_GROUND_TRUTH = {
 }
 
 # Parameter-Optimierung
+# CRITICAL: Reduced for overnight testing - only test default parameters
 PARAMETER_COMBINATIONS = {
-    'iou_match_threshold': [0.3, 0.4, 0.5, 0.6],
-    'confidence_threshold': [0.5, 0.6, 0.7, 0.8],
-    'self_correction_min_quality_score': [85.0, 90.0, 95.0]
+    # 'iou_match_threshold': [0.3, 0.4, 0.5, 0.6],  # DISABLED: Too many combinations
+    # 'confidence_threshold': [0.5, 0.6, 0.7, 0.8],  # DISABLED: Too many combinations
+    # 'self_correction_min_quality_score': [85.0, 90.0, 95.0]  # DISABLED: Too many combinations
 }
+# Only test with default parameters (empty dict = use config defaults)
 
 # Strategien zu testen (updated for new strategy names)
 STRATEGIES_TO_TEST = ['simple_whole_image', 'default_flash', 'hybrid_fusion']
@@ -324,6 +326,10 @@ def generate_parameter_combinations() -> List[Dict[str, Any]]:
     Returns:
         Liste von Parameter-Dictionaries
     """
+    # If PARAMETER_COMBINATIONS is empty, return empty dict (use config defaults)
+    if not PARAMETER_COMBINATIONS:
+        return [{}]  # Return single empty dict = use config defaults
+    
     param_names = list(PARAMETER_COMBINATIONS.keys())
     param_values = list(PARAMETER_COMBINATIONS.values())
     
@@ -586,7 +592,8 @@ def run_overnight_loop(
     coordinator: PipelineCoordinator,
     config: Dict[str, Any],
     output_dir: Path,
-    duration_hours: float = 8.0
+    duration_hours: float = 8.0,
+    strategies: Optional[List[str]] = None
 ) -> List[Dict[str, Any]]:
     """
     Haupt-Loop für nächtlichen Optimierungs-Lauf.
@@ -614,10 +621,13 @@ def run_overnight_loop(
     all_results = []
     parameter_combinations = generate_parameter_combinations()
     
-    logger.info(f"Strategien zu testen: {STRATEGIES_TO_TEST}")
+    # Use provided strategies or fall back to STRATEGIES_TO_TEST
+    strategies_to_test = strategies if strategies else STRATEGIES_TO_TEST
+    
+    logger.info(f"Strategien zu testen: {strategies_to_test}")
     logger.info(f"Parameter-Kombinationen: {len(parameter_combinations)}")
     logger.info(f"Test-Bilder: {len(TEST_IMAGES)}")
-    logger.info(f"Gesamt-Tests: {len(STRATEGIES_TO_TEST) * len(parameter_combinations) * len(TEST_IMAGES)}")
+    logger.info(f"Gesamt-Tests: {len(strategies_to_test) * len(parameter_combinations) * len(TEST_IMAGES)}")
     
     iteration = 0
     
@@ -629,7 +639,7 @@ def run_overnight_loop(
         logger.info(f"Verbleibende Zeit: {(end_time - datetime.now()).total_seconds() / 3600:.2f} Stunden")
         
         # Teste jede Strategie
-        for strategy_name in STRATEGIES_TO_TEST:
+        for strategy_name in strategies_to_test:
             if datetime.now() >= end_time:
                 break
             
@@ -721,6 +731,13 @@ def main():
         default="outputs/overnight_optimization",
         help="Output-Verzeichnis (Standard: outputs/overnight_optimization)"
     )
+    parser.add_argument(
+        "--strategies",
+        nargs="+",
+        type=str,
+        default=None,
+        help="Strategien zum Testen (Standard: alle in STRATEGIES_TO_TEST)"
+    )
     
     args = parser.parse_args()
     
@@ -792,7 +809,8 @@ def main():
             coordinator=coordinator,
             config=config,
             output_dir=output_dir,
-            duration_hours=args.duration
+            duration_hours=args.duration,
+            strategies=args.strategies
         )
         
         end_time = datetime.now()

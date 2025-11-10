@@ -181,20 +181,60 @@ class LiveTestRunner:
         try:
             with open(self.test_truth, 'r', encoding='utf-8') as f:
                 gt_data = json.load(f)
-            self.logger.info(f"[OK] Ground truth loaded: {len(gt_data.get('elements', []))} elements")
+            
+            # CRITICAL FIX: Convert CGM format (connectors) to simple format (connections)
+            # Ground truth can have either 'connections' or 'connectors' key
+            if 'connectors' in gt_data and 'connections' not in gt_data:
+                connectors = gt_data.get('connectors', [])
+                connections = []
+                for conn in connectors:
+                    # Convert CGM format to simple format
+                    from_ports = conn.get('from_converter_ports', [])
+                    to_ports = conn.get('to_converter_ports', [])
+                    
+                    # Extract unit names from ports
+                    from_ids = [p.get('unit_name') for p in from_ports if p.get('unit_name')]
+                    to_ids = [p.get('unit_name') for p in to_ports if p.get('unit_name')]
+                    
+                    # Handle multiple from/to (merges/splits)
+                    # Each from_id connects to each to_id
+                    for from_id in from_ids:
+                        for to_id in to_ids:
+                            if from_id and to_id:
+                                connections.append({
+                                    'from_id': from_id,
+                                    'to_id': to_id
+                                })
+                
+                gt_data['connections'] = connections
+                self.logger.info(f"[OK] Ground truth converted from CGM format: {len(connectors)} connectors -> {len(connections)} connections")
+            
+            # Count elements (can be in 'elements' or 'components' key)
+            elements_count = len(gt_data.get('elements', []))
+            if not elements_count:
+                elements_count = len(gt_data.get('components', []))
+            
+            self.logger.info(f"[OK] Ground truth loaded: {elements_count} elements, {len(gt_data.get('connections', []))} connections")
             return gt_data
         except Exception as e:
             self.logger.error(f"Error loading ground truth: {e}", exc_info=True)
             return None
     
-    def run_test(self):
-        """Run the complete test."""
+    def run_test(self, strategy: Optional[str] = None):
+        """Run the complete test.
+        
+        Args:
+            strategy: Optional strategy name. If not provided, uses module-level STRATEGY.
+        """
+        # CRITICAL FIX: Use provided strategy or fall back to module-level STRATEGY
+        actual_strategy = strategy or STRATEGY
+        
         self.logger.info("=" * 80)
         self.logger.info("STARTING TEST RUN")
         self.logger.info("=" * 80)
         self.logger.info(f"Test Image: {self.test_image}")
         self.logger.info(f"Output Directory: {self.output_dir}")
-        self.logger.info(f"Strategy: {STRATEGY}")
+        self.logger.info(f"Strategy: {actual_strategy} (provided: {strategy is not None}, module: {STRATEGY})")
         self.logger.info("=" * 80)
         
         # Verify image exists
@@ -204,17 +244,30 @@ class LiveTestRunner:
         # Load strategy config
         config = self.config_service.get_raw_config()
         strategies = config.get('strategies', {})
-        strategy_config = strategies.get(STRATEGY, {})
+        strategy_config = strategies.get(actual_strategy, {})
         
         if not strategy_config:
-            raise ValueError(f"Strategy '{STRATEGY}' not found!")
+            raise ValueError(f"Strategy '{actual_strategy}' not found in config! Available strategies: {list(strategies.keys())}")
         
         # Prepare parameters
+        # CRITICAL FIX: Include all strategy parameters in params_override
+        # This ensures use_self_correction_loop and other flags are properly passed
         params_override = {
-            **strategy_config,
-            'test_name': f"{STRATEGY}_live_test",
-            'test_description': f"Live test: {STRATEGY} on {self.test_image.name}"
+            **strategy_config,  # Include all strategy config parameters
+            'test_name': f"{actual_strategy}_live_test",
+            'test_description': f"Live test: {actual_strategy} on {self.test_image.name}"
         }
+        self.logger.info(f"Params override keys: {list(params_override.keys())}")
+        use_self_correction_value = params_override.get('use_self_correction_loop', 'NOT SET')
+        self.logger.info(f"use_self_correction_loop: {use_self_correction_value} (type: {type(use_self_correction_value).__name__})")
+        
+        # CRITICAL FIX: Ensure boolean values are properly converted
+        if 'use_self_correction_loop' in params_override:
+            if isinstance(params_override['use_self_correction_loop'], str):
+                params_override['use_self_correction_loop'] = params_override['use_self_correction_loop'].lower() in ('true', '1', 'yes')
+            elif not isinstance(params_override['use_self_correction_loop'], bool):
+                params_override['use_self_correction_loop'] = bool(params_override['use_self_correction_loop'])
+        self.logger.info(f"use_self_correction_loop (after conversion): {params_override.get('use_self_correction_loop', 'NOT SET')}")
         
         # Load ground truth
         gt_data = self.load_ground_truth()
@@ -272,12 +325,14 @@ class LiveTestRunner:
             
             # CRITICAL: Save results to data/ subdirectory
             result_file = self.output_manager.get_data_path("test_result.json")
+            # CRITICAL FIX: Include ground_truth in test_result if available
             test_result = {
-                'strategy': STRATEGY,
+                'strategy': actual_strategy,  # CRITICAL FIX: Use actual strategy name
                 'image_path': str(self.test_image),
                 'duration_minutes': duration,
                 'timestamp': datetime.now().isoformat(),
                 'result': result_dict,
+                'ground_truth': gt_data if gt_data else {},  # CRITICAL FIX: Include ground truth
                 'kpis': kpis,
                 'success': True
             }
@@ -409,16 +464,13 @@ if __name__ == "__main__":
     print("=" * 80)
     print()
     
-    # Update STRATEGY for runner
-    import scripts.validation.run_live_test as run_live_test_module
-    run_live_test_module.STRATEGY = test_strategy
-    
+    # CRITICAL FIX: Pass strategy directly to run_test() method
     runner = LiveTestRunner(test_image, test_truth, use_complex=use_complex)
     
     try:
         runner.setup_services()
         runner.start_live_monitoring()
-        runner.run_test()
+        runner.run_test(strategy=test_strategy)  # CRITICAL FIX: Pass strategy directly
     except KeyboardInterrupt:
         runner.logger.warning("\nTest interrupted by user")
         runner.cleanup()

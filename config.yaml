@@ -204,6 +204,7 @@ strategies:
     use_self_correction_loop: true  # Self-Correction für Qualität
     use_normalization_engine: true  # Wichtig, um "S" -> "pipe" zu fangen
     monolith_whole_image: true  # CRITICAL: Analysiere ganzes Bild, keine Quadranten
+    monolith_quadrant_strategy: "whole_image"  # "whole_image" | "4" | "6" | "adaptive" (only used if monolith_whole_image: false)
     swarm_model: "Google Gemini 2.5 Flash"  # Nicht verwendet (use_swarm_analysis: false)
     monolith_model: "Google Gemini 2.5 Pro"  # CRITICAL: Starkes Modell für ganzes Bild
     detail_model: "Google Gemini 2.5 Pro"  # Pro für bessere Präzision
@@ -238,7 +239,8 @@ strategies:
     use_fusion: true  # Fusion aktiviert (kombiniert Swarm + Monolith)
     use_self_correction_loop: true  # Self-Correction für Qualität
     use_normalization_engine: true  # Normalization für logische Korrekturen
-    monolith_whole_image: false  # Monolith verwendet Quadranten für große Bilder
+    monolith_whole_image: true  # CRITICAL: Monolith bekommt ganzes Bild für optimale Verbindungserkennung (vollständiger Kontext)
+    monolith_quadrant_strategy: "whole_image"  # "whole_image" | "4" | "6" | "adaptive" (only used if monolith_whole_image: false)
     swarm_model: "Google Gemini 2.5 Flash"
     monolith_model: "Google Gemini 2.5 Pro"  # CRITICAL: Always Pro for Monolith
     detail_model: "Google Gemini 2.5 Flash"
@@ -252,13 +254,14 @@ strategies:
   # Geschwindigkeit: ~3-8 Minuten pro Diagramm
   # CRITICAL: Echte Flash-Strategie = Nur Swarm, kein Monolith, keine Fusion
   # Verwendung: A/B-Tests, schnelle Iterationen, kosteneffiziente Analysen
-  hybrid_fusion:
+  default_flash:
     use_swarm_analysis: true  # Swarm aktiviert (schnell)
     use_monolith_analysis: false  # CRITICAL: Monolith AUS (Flash = schnell)
     use_fusion: false  # CRITICAL: Fusion AUS (kein Monolith zu fusionieren)
     use_self_correction_loop: false  # CRITICAL: Self-Correction AUS (Flash = schnell)
     use_normalization_engine: true  # WICHTIG: Normalization AN (logische Korrekturen)
     monolith_whole_image: false  # Nicht verwendet (use_monolith_analysis: false)
+    monolith_quadrant_strategy: "adaptive"  # "whole_image" | "4" | "6" | "adaptive" (only used if monolith_whole_image: false)
     swarm_model: "Google Gemini 2.5 Flash"  # Flash für Geschwindigkeit
     monolith_model: "Google Gemini 2.5 Flash"  # Nicht verwendet
     detail_model: "Google Gemini 2.5 Flash"
@@ -288,6 +291,10 @@ logic_parameters:
   # CRITICAL FIX 3: Hybrid Validation (CV + Semantic)
   # Combines CV line detection with semantic validation for better connection accuracy
   use_hybrid_validation: true  # Enable hybrid CV + semantic validation
+  
+  # CRITICAL FIX 4: LLM-based ID Correction (Simple & Effective)
+  # Instead of complex matching logic, send image + IDs to LLM and ask it to extract correct IDs
+  use_id_correction: true  # Enable LLM-based ID correction
   
   # ----------------------------------------------------
   # Phase 2: Analysis Strategy
@@ -326,7 +333,7 @@ logic_parameters:
   
   # PHASE 5.4: Maximale Anzahl paralleler Worker für die Analyse-Aufrufe (max 8-10 für API-Limits)
   # Increased from 4 to 6 for faster processing (Uni-Bilder optimization)
-  llm_executor_workers: 30  # CRITICAL: Optimiert für Flash (500-530 RPM bei 30 Workers) - basierend auf Rate-Limit-Tests
+  llm_executor_workers: 20  # CRITICAL: REDUCED from 30 to 20 for overnight stability (minimize 429 errors)
   
   # ----------------------------------------------------
   # Phase 1: BBox Validierung & Verfeinerung
@@ -354,10 +361,10 @@ logic_parameters:
   # WICHTIG: Diese Werte müssen mit deiner Google Cloud Quota übereinstimmen!
   # Standard-Quota: 60 requests/min, 32k tokens/min
   # Empfohlene Quota: 300 requests/min, 100k tokens/min (siehe VERTEX_AI_QUOTA_AND_OPTIMIZATION_GUIDE.md)
-  llm_rate_limit_requests_per_minute: 500  # CRITICAL: Optimiert für Flash (500-530 RPM stabil) - basierend auf Rate-Limit-Tests
-  llm_rate_limit_tokens_per_minute: 100000  # Anpassen basierend auf deiner Google Cloud Quota
+  llm_rate_limit_requests_per_minute: 300  # CRITICAL: REDUCED from 500 to 300 for overnight stability (minimize 429 errors)
+  llm_rate_limit_tokens_per_minute: 1500000  # CRITICAL: INCREASED from 100k to 1.5M to support Monolith (Pro) with whole image (24 RPM * 5k tokens = 120k TPM) + Swarm (Flash) without hitting limits. Monolith alone already exceeds 100k TPM!
   # Maximale parallele Requests (verhindert Quota-Überschreitung)
-  llm_max_concurrent_requests: 30  # CRITICAL: Optimiert für Flash (30 Workers = 500-530 RPM stabil) - basierend auf Rate-Limit-Tests
+  llm_max_concurrent_requests: 20  # CRITICAL: REDUCED from 30 to 20 for overnight stability (minimize 429 errors)
   # Größe des Festplatten-Caches für LLM-Antworten in Gigabyte
   llm_disk_cache_size_gb: 2
   # Anzahl der Einträge im Memory-Cache (Level 1, LRU)
@@ -368,9 +375,9 @@ logic_parameters:
   # ----------------------------------------------------
   # CRITICAL: Circuit Breaker optimiert für viele Requests (Parameter-Tuning, Batch-Processing)
   # Anzahl Fehler, bevor der Circuit Breaker öffnet (erhöht für komplexe Analysen mit vielen Tiles)
-  circuit_breaker_failure_threshold: 100   # Erhöht von 40 auf 100 für viele Requests (Parameter-Tuning: 36 Tests × 10+ Requests)
+  circuit_breaker_failure_threshold: 150   # Erhöht für Overnight-Tests (mehr Toleranz für temporäre Fehler)
   # Wartezeit in Sekunden, bevor der Circuit Breaker versucht, sich zu erholen
-  circuit_breaker_recovery_timeout: 60   # Reduziert von 180 auf 60 Sekunden für schnelleres Recovery
+  circuit_breaker_recovery_timeout: 120   # Erhöht auf 120 Sekunden für Overnight-Stabilität (langsamere Recovery = weniger 429)
   
   # ----------------------------------------------------
   # LLM Logging Configuration
@@ -780,9 +787,9 @@ prompts:
 
   swarm_analysis_user_prompt_template: |-
     **ROLE:** You are a P&ID analysis engine with high precision requirements.
-    **TASK:** Analyze the provided image segment and identify ALL components (symbols and text labels).
+    **TASK:** Analyze the provided image segment and identify ALL components (symbols and text labels) AND local connections within this tile.
     
-    **CRITICAL:** Your ONLY task is to find ELEMENTS. IGNORE all connections (lines/pipes).
+    **CRITICAL:** Your PRIMARY task is to find ELEMENTS. Your SECONDARY task is to find LOCAL CONNECTIONS (lines/pipes) BETWEEN elements within this tile only.
     
     **CRITICAL: STRICT TYPE CONSTRAINTS (STRICTLY ENFORCE):**
     1. You MUST use EXACT types from this list: {known_types_json}
@@ -919,11 +926,22 @@ prompts:
     - Only include 'Line_Split' and 'Line_Merge' if they are CLEARLY VISIBLE and have visual evidence
     - If an element's label or type is ambiguous, DO NOT include it
 
-    **2. "connections" List:**
-    - CRITICAL: Provide an EMPTY list. You MUST NOT detect connections.
-    - ` "connections": [] `
-    - **NOTE:** If you are instructed to detect connections, REQUIRED KEYS are `"from_id"`, `"to_id"`, `"from_port_id"`, `"to_port_id"`.
-    - **`"confidence"`**: (float, 0.0-1.0) Your confidence that this connection is correct (0.9+ = Very Sure, < 0.5 = Guessing).
+    **2. "connections" List (LOCAL CONNECTIONS ONLY):**
+    - Find connections (lines/pipes) BETWEEN elements that are BOTH visible in this tile
+    - **CRITICAL:** ONLY detect connections within this tile. DO NOT attempt to connect elements across tile boundaries.
+    - **CRITICAL:** If an element's connection extends beyond the tile boundary, DO NOT include that connection (it will be handled by global analysis).
+    - REQUIRED KEYS: `"from_id"`, `"to_id"`, `"from_port_id"`, `"to_port_id"`, `"kind"`, `"confidence"`.
+    - **`"from_id"`**: ID of the source element (must be in the "elements" list above)
+    - **`"to_id"`**: ID of the destination element (must be in the "elements" list above)
+    - **`"from_port_id"`**: ID of the output port on the source element (e.g., "out_1")
+    - **`"to_port_id"`**: ID of the input port on the destination element (e.g., "in_1")
+    - **`"kind"`**: Type of connection - MUST be one of: "process" (for process lines/pipes), "control" (for control lines like ISA), "electrical" (for electrical connections)
+    - **`"confidence"`**: (float, 0.0-1.0) Your confidence that this connection is correct (0.9+ = Very Sure, < 0.5 = Guessing)
+    - **LOCAL CONNECTION RULES:**
+      - Only connect elements that are BOTH in this tile
+      - If a line extends beyond the tile boundary, DO NOT include it (will be handled by global analysis)
+      - Focus on clear, visible connections within the tile
+      - If uncertain about a connection, use lower confidence (0.6-0.7) or exclude it
 
     **KNOWLEDGE BASE (Use these EXACT types - CASE-SENSITIVE):**
     {known_types_json}
@@ -964,18 +982,19 @@ prompts:
     
   monolithic_analysis_prompt_template: |-
     **ROLE:** You are a P&ID Topology Specialist.
-    **TASK:** Your ONLY task is to find ALL connections (lines/pipes) between the elements provided in the knowledge base.
+    **TASK:** Find ALL connections (lines/pipes) between elements AND detect any additional elements that may have been missed.
     
     **CRITICAL KNOWLEDGE BASE (INPUT):**
-    Here is a complete JSON list of all known elements on the diagram. You MUST use their exact IDs.
+    Here is a complete JSON list of all known elements on the diagram. You should use their IDs when possible, but you can also detect additional elements if they are visible in the image.
     `{element_list_json}`
     
     **CRITICAL RULES (STRICTLY ENFORCE):**
-    1. **ONLY DETECT CONNECTIONS.** Do NOT detect elements.
-    2. Use the EXACT element IDs from the knowledge base for `"from_id"` and `"to_id"`.
-    3. Find ALL visible lines/pipes connecting these elements within the image.
-    4. DO NOT invent connections that are not visually present.
-    5. IGNORE connections to elements NOT in the provided list.
+    1. **PRIMARY TASK: DETECT CONNECTIONS** between elements (both from the knowledge base AND any additional elements you detect).
+    2. **SECONDARY TASK: DETECT ADDITIONAL ELEMENTS** that are visible in the image but NOT in the knowledge base (e.g., if Swarm missed them or used wrong IDs).
+    3. If an element in the knowledge base has a wrong ID (e.g., "P-999" instead of "P-101"), use the CORRECT ID from the image (e.g., "P-101").
+    4. Find ALL visible lines/pipes connecting these elements within the image.
+    5. DO NOT invent connections that are not visually present.
+    6. For connections, prefer using correct element IDs from the image over incorrect IDs from the knowledge base.
     
     {legend_context}
     {error_feedback}
@@ -983,21 +1002,25 @@ prompts:
     **OUTPUT FORMAT:** Your entire response MUST be a single, valid JSON object.
     
     **1. "elements" List:**
-    - CRITICAL: Provide an EMPTY list. You MUST NOT detect elements.
-    - ` "elements": [] `
-    - **NOTE:** If the prompt is modified to allow additional element detection (e.g., in simple P&ID mode or when legend symbols are missing), then:
-      - REQUIRED KEYS: `"id"`, `"type"`, `"label"`, `"bbox"`, `"confidence"`.
-      - **`"confidence"`:** (float, 0.0-1.0) Your certainty that this element is correctly identified. 0.9+ = Very certain, < 0.5 = Guessed.
-      - **`"ports"`**: (MANDATORY) List of ports for this element. Each port must have: `"id"` (e.g., "in_1", "out_1", "control_1"), `"name"` (e.g., "In", "Out", "Control"), `"type"` ("input", "output", or "control").
-        - **Input ports**: For elements that receive flow FROM other elements (most elements have at least 1 input)
-        - **Output ports**: For elements that send flow TO other elements (most elements have at least 1 output)
-        - **Control ports**: For Valves that receive control signals (e.g., from ISA/Instrument Air Supply)
-        - **CRITICAL**: If you cannot determine ports visually, provide default ports: `[{"id": "in_1", "name": "In", "type": "input"}, {"id": "out_1", "name": "Out", "type": "output"}]`
-        - **CRITICAL**: Valves MUST have a control port if control lines are visible: `{"id": "control_1", "name": "Control", "type": "control"}`
+    - **PRIMARY:** Provide an EMPTY list if all elements are already in the knowledge base and their IDs are correct.
+    - **SECONDARY:** If you find elements that are NOT in the knowledge base, OR if elements in the knowledge base have WRONG IDs, add them here with CORRECT IDs from the image.
+    - **CRITICAL:** If an element in the knowledge base has a wrong ID (e.g., "P-999" instead of "P-101"), create a new element entry with the CORRECT ID (e.g., "P-101") so that connections can reference the correct ID.
+    - REQUIRED KEYS: `"id"`, `"type"`, `"label"`, `"bbox"`, `"confidence"`.
+    - **`"confidence"`:** (float, 0.0-1.0) Your certainty that this element is correctly identified. 0.9+ = Very certain, < 0.5 = Guessed.
+    - **`"ports"`**: (MANDATORY) List of ports for this element. Each port must have: `"id"` (e.g., "in_1", "out_1", "control_1"), `"name"` (e.g., "In", "Out", "Control"), `"type"` ("input", "output", or "control").
+      - **Input ports**: For elements that receive flow FROM other elements (most elements have at least 1 input)
+      - **Output ports**: For elements that send flow TO other elements (most elements have at least 1 output)
+      - **Control ports**: For Valves that receive control signals (e.g., from ISA/Instrument Air Supply)
+      - **CRITICAL**: If you cannot determine ports visually, provide default ports: `[{"id": "in_1", "name": "In", "type": "input"}, {"id": "out_1", "name": "Out", "type": "output"}]`
+      - **CRITICAL**: Valves MUST have a control port if control lines are visible: `{"id": "control_1", "name": "Control", "type": "control"}`
     
     **2. "connections" List:**
-    - Find ALL connections (lines/pipes) between the elements in the knowledge base.
-    - REQUIRED KEYS: `"from_id"`, `"to_id"`, `"from_port_id"`, `"to_port_id"`, `"kind"`.
+    - Find ALL connections (lines/pipes) between elements (both from the knowledge base AND any additional elements you detect).
+    - **CRITICAL:** When creating connections, use the CORRECT element IDs from the image, NOT incorrect IDs from the knowledge base.
+    - **CRITICAL:** If an element in the knowledge base has a wrong ID (e.g., "P-999"), but you see the correct ID in the image (e.g., "P-101"), use the CORRECT ID (e.g., "P-101") for connections.
+    - REQUIRED KEYS: `"from_id"`, `"to_id"`, `"from_port_id"`, `"to_port_id"`, `"kind"`, `"confidence"`.
+    - **`"from_id"`**: ID of the source element (use CORRECT ID from image, not wrong ID from knowledge base)
+    - **`"to_id"`**: ID of the destination element (use CORRECT ID from image, not wrong ID from knowledge base)
     - **`"from_port_id"`**: ID of the output port on the source element (e.g., "out_1")
     - **`"to_port_id"`**: ID of the input port on the destination element (e.g., "in_1")
     - **`"kind"`**: Type of connection - MUST be one of: "process" (for process lines/pipes), "control" (for control lines like ISA/Instrument Air Supply), "electrical" (for electrical connections). 
@@ -1009,6 +1032,7 @@ prompts:
       - Sources (Pumps, P-*, etc.) should only have outputs (to_id) - they generate flow
       - Control lines (ISA) should ONLY connect to Valves (not to Pumps, Sensors, or Mixers)
       - If you see a connection like "FT-10 → Fv-3-3040", it's WRONG - reverse it to "Fv-3-3040 → FT-10"
+      - **ID CORRECTION:** Always use the CORRECT element ID from the image, even if it differs from the knowledge base
     
     **CRITICAL: CONFIDENCE SCORES (MANDATORY):**
     - EVERY connection MUST have a "confidence" field (float, 0.0-1.0)

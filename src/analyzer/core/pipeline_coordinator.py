@@ -438,7 +438,101 @@ class PipelineCoordinator(IProcessor):
                 elif use_fusion:
                     logger.info("Running Phase 2c: Confidence-Based Fusion Engine...")
                     fused_result = self._run_phase_2c_fusion(swarm_result, monolith_result)
-                    self._analysis_results = fused_result
+                    
+                    # CRITICAL FIX 7: Quality check for Fusion results - only use if better than inputs
+                    # PROBLEM: Fusion results were always used, even if they were worse than Swarm or Monolith alone
+                    # SOLUTION: Compare fusion quality with input quality, only use fusion if it's better
+                    # EXPLANATION: This ensures continuous improvement - only better results are passed to next phase
+                    
+                    from src.analyzer.evaluation.kpi_calculator import KPICalculator
+                    kpi_calculator = KPICalculator()
+                    
+                    # Calculate quality scores for comparison
+                    input_scores = {}
+                    if swarm_result and swarm_result.get('elements'):
+                        swarm_kpis = kpi_calculator.calculate_comprehensive_kpis(swarm_result, None)
+                        input_scores['swarm'] = swarm_kpis.get('quality_score', 0.0)
+                        # Fallback calculation if score is 0
+                        if input_scores['swarm'] == 0.0:
+                            swarm_elements = swarm_result.get('elements', [])
+                            swarm_connections = swarm_result.get('connections', [])
+                            input_scores['swarm'] = 50.0
+                            if swarm_elements:
+                                avg_conf = sum(el.get('confidence', 0.5) for el in swarm_elements) / len(swarm_elements)
+                                input_scores['swarm'] += min(len(swarm_elements) * 1.5, 25.0)
+                                input_scores['swarm'] += avg_conf * 15.0
+                            if swarm_connections:
+                                avg_conn_conf = sum(conn.get('confidence', 0.5) for conn in swarm_connections) / len(swarm_connections)
+                                input_scores['swarm'] += min(len(swarm_connections) * 1.0, 15.0)
+                                input_scores['swarm'] += avg_conn_conf * 10.0
+                            input_scores['swarm'] = min(max(input_scores['swarm'], 0.0), 100.0)
+                    
+                    if monolith_result and monolith_result.get('elements'):
+                        monolith_kpis = kpi_calculator.calculate_comprehensive_kpis(monolith_result, None)
+                        input_scores['monolith'] = monolith_kpis.get('quality_score', 0.0)
+                        # Fallback calculation if score is 0
+                        if input_scores['monolith'] == 0.0:
+                            monolith_elements = monolith_result.get('elements', [])
+                            monolith_connections = monolith_result.get('connections', [])
+                            input_scores['monolith'] = 50.0
+                            if monolith_elements:
+                                avg_conf = sum(el.get('confidence', 0.5) for el in monolith_elements) / len(monolith_elements)
+                                input_scores['monolith'] += min(len(monolith_elements) * 1.5, 25.0)
+                                input_scores['monolith'] += avg_conf * 15.0
+                            if monolith_connections:
+                                avg_conn_conf = sum(conn.get('confidence', 0.5) for conn in monolith_connections) / len(monolith_connections)
+                                input_scores['monolith'] += min(len(monolith_connections) * 1.0, 15.0)
+                                input_scores['monolith'] += avg_conn_conf * 10.0
+                            input_scores['monolith'] = min(max(input_scores['monolith'], 0.0), 100.0)
+                    
+                    # Get best input score
+                    best_input_score = max(input_scores.values()) if input_scores else 0.0
+                    
+                    # Calculate fusion score
+                    fusion_kpis = kpi_calculator.calculate_comprehensive_kpis(fused_result, None)
+                    fusion_score = fusion_kpis.get('quality_score', 0.0)
+                    
+                    # Fallback calculation if fusion_score is 0
+                    if fusion_score == 0.0:
+                        fusion_elements = fused_result.get('elements', [])
+                        fusion_connections = fused_result.get('connections', [])
+                        fusion_score = 50.0
+                        if fusion_elements:
+                            avg_conf = sum(el.get('confidence', 0.5) for el in fusion_elements) / len(fusion_elements)
+                            fusion_score += min(len(fusion_elements) * 1.5, 25.0)
+                            fusion_score += avg_conf * 15.0
+                        if fusion_connections:
+                            avg_conn_conf = sum(conn.get('confidence', 0.5) for conn in fusion_connections) / len(fusion_connections)
+                            fusion_score += min(len(fusion_connections) * 1.0, 15.0)
+                            fusion_score += avg_conn_conf * 10.0
+                        fusion_score = min(max(fusion_score, 0.0), 100.0)
+                    
+                    # CRITICAL: Only use fusion if it's better than best input
+                    min_improvement = self.active_logic_parameters.get('min_improvement_threshold', 0.5)
+                    fusion_is_better = fusion_score > (best_input_score + min_improvement)
+                    
+                    if fusion_is_better:
+                        improvement = fusion_score - best_input_score
+                        logger.info(f"Fusion improved quality: {best_input_score:.2f} -> {fusion_score:.2f} (+{improvement:.2f}). Using fusion results.")
+                        self._analysis_results = fused_result
+                    else:
+                        # Fusion didn't improve - use best input result
+                        if fusion_score < best_input_score:
+                            logger.warning(f"Fusion deteriorated quality: {best_input_score:.2f} -> {fusion_score:.2f}. Using best input result instead.")
+                        else:
+                            logger.info(f"Fusion did not improve quality significantly: {best_input_score:.2f} -> {fusion_score:.2f} (threshold: {min_improvement:.2f}). Using best input result.")
+                        
+                        # Use best input result (swarm or monolith)
+                        if input_scores.get('swarm', 0) >= input_scores.get('monolith', 0) and swarm_result:
+                            logger.info("Using Swarm result (best input quality)")
+                            self._analysis_results = swarm_result
+                        elif monolith_result:
+                            logger.info("Using Monolith result (best input quality)")
+                            self._analysis_results = monolith_result
+                        else:
+                            # Fallback to fusion if no input is better
+                            logger.warning("No input result available, using fusion result as fallback")
+                            self._analysis_results = fused_result
                 
                 else:
                     # Fallback (sollte nicht passieren, wenn Test-Harness korrekt konfiguriert ist)
@@ -457,8 +551,9 @@ class PipelineCoordinator(IProcessor):
             symbol_map = legend_data.get('symbol_map', {})
             if symbol_map:
                 logger.info(f"Checking for missing legend symbols: {len(symbol_map)} symbols in legend")
-                fused_result = self._add_missing_legend_symbols(fused_result, symbol_map, monolith_result)
-                self._analysis_results = fused_result
+                current_result = self._analysis_results.copy()
+                updated_result = self._add_missing_legend_symbols(current_result, symbol_map, monolith_result)
+                self._analysis_results = updated_result
             
             # Phase 2d: Predictive completion
             self._update_progress(50, "Phase 2d: Predictive completion...")
@@ -473,6 +568,12 @@ class PipelineCoordinator(IProcessor):
             if self.active_logic_parameters.get('use_hybrid_validation', True):
                 self._update_progress(58, "Hybrid validation: CV + Semantic...")
                 self._run_hybrid_validation(image_path)
+            
+            # CRITICAL FIX 4: Multi-Layered ID Extraction (OCR + CV + Pattern + LLM Fallback)
+            # Robust, reliable ID extraction using multiple strategies
+            if self.active_logic_parameters.get('use_id_correction', True):
+                self._update_progress(59, "ID Extraction: Extracting correct IDs from image (OCR + CV + LLM)...")
+                self._run_id_extraction(image_path)
             
             # Phase 3: Self-correction loop
             self._update_progress(60, "Phase 3: Self-correction loop...")
@@ -1478,11 +1579,78 @@ Be honest and strict in your evaluation."""
             distance_threshold=distance_threshold
         )
         
-        self._analysis_results["connections"] = all_connections_after_prediction
+        # CRITICAL FIX 8: Quality check for Predictive Completion - only use if better
+        # PROBLEM: Predictive completion could add false connections, degrading quality
+        # SOLUTION: Calculate quality before/after, only use if quality improves
+        # EXPLANATION: This ensures continuous improvement - only better results are passed to next phase
+        
+        from src.analyzer.evaluation.kpi_calculator import KPICalculator
+        kpi_calculator = KPICalculator()
+        
+        # Calculate quality BEFORE predictive completion
+        results_before = {
+            'elements': self._analysis_results.get('elements', []),
+            'connections': original_connections
+        }
+        kpis_before = kpi_calculator.calculate_comprehensive_kpis(results_before, None)
+        quality_before = kpis_before.get('quality_score', 0.0)
+        
+        # Fallback calculation
+        if quality_before == 0.0:
+            quality_before = 50.0
+            elements = self._analysis_results.get('elements', [])
+            if elements:
+                avg_conf = sum(el.get('confidence', 0.5) for el in elements) / len(elements)
+                quality_before += min(len(elements) * 1.5, 25.0)
+                quality_before += avg_conf * 15.0
+            if original_connections:
+                avg_conn_conf = sum(conn.get('confidence', 0.5) for conn in original_connections) / len(original_connections)
+                quality_before += min(len(original_connections) * 1.0, 15.0)
+                quality_before += avg_conn_conf * 10.0
+            quality_before = min(max(quality_before, 0.0), 100.0)
+        
+        # Calculate quality AFTER predictive completion
+        results_after = {
+            'elements': self._analysis_results.get('elements', []),
+            'connections': all_connections_after_prediction
+        }
+        kpis_after = kpi_calculator.calculate_comprehensive_kpis(results_after, None)
+        quality_after = kpis_after.get('quality_score', 0.0)
+        
+        # Fallback calculation
+        if quality_after == 0.0:
+            quality_after = 50.0
+            elements = self._analysis_results.get('elements', [])
+            if elements:
+                avg_conf = sum(el.get('confidence', 0.5) for el in elements) / len(elements)
+                quality_after += min(len(elements) * 1.5, 25.0)
+                quality_after += avg_conf * 15.0
+            if all_connections_after_prediction:
+                avg_conn_conf = sum(conn.get('confidence', 0.5) for conn in all_connections_after_prediction) / len(all_connections_after_prediction)
+                quality_after += min(len(all_connections_after_prediction) * 1.0, 15.0)
+                quality_after += avg_conn_conf * 10.0
+            quality_after = min(max(quality_after, 0.0), 100.0)
+        
+        # CRITICAL: Only use predictive completion if quality improved
+        min_improvement = self.active_logic_parameters.get('min_improvement_threshold', 0.5)
+        quality_improved = quality_after > (quality_before + min_improvement)
         
         added_count = len(all_connections_after_prediction) - len(original_connections)
-        if added_count > 0:
-            logger.info(f"{added_count} connection gaps predictively closed.")
+        
+        if quality_improved:
+            improvement = quality_after - quality_before
+            logger.info(f"Predictive completion improved quality: {quality_before:.2f} -> {quality_after:.2f} (+{improvement:.2f}). "
+                       f"Added {added_count} connections.")
+            self._analysis_results["connections"] = all_connections_after_prediction
+        else:
+            # Quality didn't improve - keep original connections
+            if quality_after < quality_before:
+                logger.warning(f"Predictive completion deteriorated quality: {quality_before:.2f} -> {quality_after:.2f}. "
+                              f"Rejecting {added_count} added connections, keeping original.")
+            else:
+                logger.info(f"Predictive completion did not improve quality significantly: {quality_before:.2f} -> {quality_after:.2f} "
+                           f"(threshold: {min_improvement:.2f}). Keeping original connections.")
+            # DO NOT update connections - keep original
         
         # TEST HARNESS: Save intermediate result after predictive completion
         if hasattr(self, 'current_output_dir'):
@@ -1647,9 +1815,84 @@ Be honest and strict in your evaluation."""
         all_polylines = [r['polyline'] for r in polyline_results]
         updated_connections = match_polylines_to_connections(elements, connections, all_polylines)
         
-        self._analysis_results["connections"] = updated_connections
+        # CRITICAL FIX 9: Quality check for Polyline Refinement - only use if better
+        # PROBLEM: Polyline refinement could add incorrect polylines, degrading quality
+        # SOLUTION: Calculate quality before/after, only use if quality improves
+        # EXPLANATION: This ensures continuous improvement - only better results are passed to next phase
         
-        logger.info(f"Polyline extraction complete: {len(polyline_results)} polylines extracted.")
+        from src.analyzer.evaluation.kpi_calculator import KPICalculator
+        kpi_calculator = KPICalculator()
+        
+        # Calculate quality BEFORE polyline refinement
+        results_before = {
+            'elements': elements,
+            'connections': connections
+        }
+        kpis_before = kpi_calculator.calculate_comprehensive_kpis(results_before, None)
+        quality_before = kpis_before.get('quality_score', 0.0)
+        
+        # Fallback calculation
+        if quality_before == 0.0:
+            quality_before = 50.0
+            if elements:
+                avg_conf = sum(el.get('confidence', 0.5) for el in elements) / len(elements)
+                quality_before += min(len(elements) * 1.5, 25.0)
+                quality_before += avg_conf * 15.0
+            if connections:
+                avg_conn_conf = sum(conn.get('confidence', 0.5) for conn in connections) / len(connections)
+                quality_before += min(len(connections) * 1.0, 15.0)
+                quality_before += avg_conn_conf * 10.0
+            quality_before = min(max(quality_before, 0.0), 100.0)
+        
+        # Calculate quality AFTER polyline refinement
+        results_after = {
+            'elements': elements,
+            'connections': updated_connections
+        }
+        kpis_after = kpi_calculator.calculate_comprehensive_kpis(results_after, None)
+        quality_after = kpis_after.get('quality_score', 0.0)
+        
+        # Fallback calculation
+        if quality_after == 0.0:
+            quality_after = 50.0
+            if elements:
+                avg_conf = sum(el.get('confidence', 0.5) for el in elements) / len(elements)
+                quality_after += min(len(elements) * 1.5, 25.0)
+                quality_after += avg_conf * 15.0
+            if updated_connections:
+                # Count connections with polylines as higher quality
+                polyline_count = sum(1 for conn in updated_connections if conn.get('polyline'))
+                avg_conn_conf = sum(conn.get('confidence', 0.5) for conn in updated_connections) / len(updated_connections)
+                quality_after += min(len(updated_connections) * 1.0, 15.0)
+                quality_after += avg_conn_conf * 10.0
+                quality_after += min(polyline_count * 0.5, 5.0)  # Bonus for polylines
+            quality_after = min(max(quality_after, 0.0), 100.0)
+        
+        # CRITICAL: Only use polyline refinement if quality improved or stayed same (polylines are always beneficial)
+        min_improvement = self.active_logic_parameters.get('min_improvement_threshold', 0.5)
+        quality_improved = quality_after >= (quality_before - min_improvement)  # Allow small degradation for polylines
+        
+        polyline_count = sum(1 for conn in updated_connections if conn.get('polyline'))
+        
+        if quality_improved:
+            improvement = quality_after - quality_before
+            logger.info(f"Polyline refinement {'improved' if improvement > 0 else 'maintained'} quality: {quality_before:.2f} -> {quality_after:.2f} ({'+' if improvement > 0 else ''}{improvement:.2f}). "
+                       f"Added {polyline_count} polylines to {len(updated_connections)} connections.")
+            self._analysis_results["connections"] = updated_connections
+        else:
+            # Quality degraded significantly - keep original connections but add polylines if available
+            logger.warning(f"Polyline refinement degraded quality: {quality_before:.2f} -> {quality_after:.2f}. "
+                          f"Keeping original connections, but adding polylines if available.")
+            # Add polylines to original connections if available (polylines are visual enhancements)
+            for orig_conn in connections:
+                for updated_conn in updated_connections:
+                    if (orig_conn.get('from_id') == updated_conn.get('from_id') and
+                        orig_conn.get('to_id') == updated_conn.get('to_id') and
+                        updated_conn.get('polyline')):
+                        orig_conn['polyline'] = updated_conn.get('polyline')
+            self._analysis_results["connections"] = connections
+        
+        logger.info(f"Polyline extraction complete: {len(polyline_results)} polylines extracted, {polyline_count} applied to connections.")
         
         # CRITICAL: CV-based line extraction for connection verification (Pattern 4)
         # Extract pipeline lines using CV (contour detection) for verification
@@ -1718,7 +1961,17 @@ Be honest and strict in your evaluation."""
         Iteratively validates and corrects analysis results based on feedback.
         """
         # --- KORREKTUR: Respektiere use_self_correction_loop Flag (Fix 3) ---
-        if not self.active_logic_parameters.get('use_self_correction_loop', True):
+        # CRITICAL FIX: Check flag with explicit boolean conversion
+        use_self_correction = self.active_logic_parameters.get('use_self_correction_loop', True)
+        # Convert to boolean (handle string "true"/"false" or boolean True/False)
+        if isinstance(use_self_correction, str):
+            use_self_correction = use_self_correction.lower() in ('true', '1', 'yes')
+        elif not isinstance(use_self_correction, bool):
+            use_self_correction = bool(use_self_correction)
+        
+        logger.info(f"Phase 3: use_self_correction_loop = {use_self_correction} (type: {type(use_self_correction).__name__})")
+        
+        if not use_self_correction:
             logger.warning("SKIPPING Phase 3: Self-Correction Loop (Flag is False)")
             # CRITICAL FIX: Wrap in expected structure for Phase 4
             return {
@@ -1731,6 +1984,9 @@ Be honest and strict in your evaluation."""
         
         max_iterations = self.active_logic_parameters.get('max_self_correction_iterations', 3)
         target_score = self.active_logic_parameters.get('target_quality_score', 98.0)
+        max_no_improvement_iterations = self.active_logic_parameters.get('max_no_improvement_iterations', 3)
+        min_improvement_threshold = self.active_logic_parameters.get('min_improvement_threshold', 0.5)
+        early_stop_on_plateau = self.active_logic_parameters.get('early_stop_on_plateau', True)
         
         # CRITICAL FIX 1: Initialize score_history in best_result from the start
         # This ensures score_history is always available, even if score never improves
@@ -1744,6 +2000,9 @@ Be honest and strict in your evaluation."""
         # Ensure score_history exists in best_result
         if "score_history" not in best_result["final_ai_data"]:
             best_result["final_ai_data"]["score_history"] = []
+        
+        # CRITICAL FIX 2: Track no-improvement counter for plateau detection
+        no_improvement_count = 0
         
         for i in range(max_iterations):
             iteration_name = f"Correction Iteration {i+1}/{max_iterations}"
@@ -1766,20 +2025,29 @@ Be honest and strict in your evaluation."""
                 self._analysis_results["score_history"] = []
             self._analysis_results["score_history"].append(current_score)
             
-            # CRITICAL FIX 3: Always update best_result["final_ai_data"] with latest data,
-            # but only update quality_score if it improved
-            # This ensures score_history is ALWAYS tracked, even if score doesn't improve
-            if current_score > best_result["quality_score"]:
-                # Score improved - update both quality_score and final_ai_data
+            # CRITICAL FIX 2: ONLY update best_result if score actually improved (prevents deterioration)
+            # PROBLEM: Previous code updated final_ai_data even when score didn't improve, causing worse results
+            # SOLUTION: Only update best_result when score improves by at least min_improvement_threshold
+            score_improved = current_score > (best_result["quality_score"] + min_improvement_threshold)
+            
+            if score_improved:
+                # Score improved significantly - update both quality_score and final_ai_data
+                improvement = current_score - best_result["quality_score"]
+                logger.info(f"Quality score improved: {best_result['quality_score']:.2f} -> {current_score:.2f} (+{improvement:.2f})")
                 best_result["quality_score"] = current_score
                 best_result["final_ai_data"] = copy.deepcopy(self._analysis_results)
+                no_improvement_count = 0  # Reset counter
             else:
-                # Score didn't improve - still update final_ai_data to track score_history
-                # BUT keep the best quality_score
-                best_result["final_ai_data"] = copy.deepcopy(self._analysis_results)
+                # Score didn't improve - DO NOT update final_ai_data (keep best result)
+                # EXPLANATION: This prevents quality deterioration. We keep the best result from previous iterations.
+                if current_score < best_result["quality_score"]:
+                    logger.warning(f"Quality score deteriorated: {best_result['quality_score']:.2f} -> {current_score:.2f}. Keeping best result.")
+                else:
+                    logger.info(f"Quality score did not improve significantly: {current_score:.2f} (best: {best_result['quality_score']:.2f}, threshold: {min_improvement_threshold:.2f})")
+                no_improvement_count += 1
             
-            # CRITICAL FIX 3: Ensure score_history is always up-to-date in best_result
-            # This is redundant but ensures consistency
+            # CRITICAL FIX 3: Update score_history in best_result (for visualization)
+            # NOTE: score_history tracks ALL iterations, but final_ai_data only contains BEST iteration
             best_result["final_ai_data"]["score_history"] = self._analysis_results.get("score_history", []).copy()
             
             # TEST HARNESS: Save intermediate result after each iteration
@@ -1815,16 +2083,25 @@ Be honest and strict in your evaluation."""
                     logger.warning(f"Error in visual feedback validation: {e}. Continuing without visual corrections.", exc_info=True)
             # --- ENDE Visuelles Feedback ---
             
-            # CRITICAL FIX 1: Score history is already updated above (after current_score calculation)
-            # This ensures score_history contains ALL iterations, not just the best one
+            # CRITICAL FIX 4: Early termination conditions (including plateau detection)
+            # EXPLANATION: Stop early if we reach target, have no errors, or hit a plateau (no improvement)
             
-            # Early termination conditions
+            # Condition 1: Target score reached
             if current_score >= target_score:
                 logger.info(f"Target quality score reached ({current_score:.2f} >= {target_score:.2f}). Stopping corrections.")
                 break
             
+            # Condition 2: No errors found
             if not current_errors or not any(current_errors.values()):
                 logger.info("No errors found. Stopping corrections.")
+                break
+            
+            # Condition 3: Plateau detected (no improvement for N iterations)
+            # EXPLANATION: This prevents wasting iterations when quality stops improving
+            # PROBLEM: This was in config but NOT implemented in code - now fixed!
+            if early_stop_on_plateau and no_improvement_count >= max_no_improvement_iterations:
+                logger.info(f"Plateau detected: No improvement for {no_improvement_count} iterations (threshold: {max_no_improvement_iterations}). "
+                           f"Best score: {best_result['quality_score']:.2f}, Current: {current_score:.2f}. Stopping corrections.")
                 break
             
             # Re-analyze problematic segments
@@ -1843,6 +2120,7 @@ Be honest and strict in your evaluation."""
             self._analysis_results = corrected_results
         
         logger.info(f"Self-correction complete. Best score: {best_result['quality_score']:.2f}")
+        logger.info(f"Total iterations: {i+1}/{max_iterations}, No improvement count: {no_improvement_count}")
         
         # CRITICAL FIX: Ensure score_history is always included in final result
         # This ensures the visualization gets all iteration scores, even if best_result wasn't updated
@@ -1853,6 +2131,10 @@ Be honest and strict in your evaluation."""
             # Fallback: Create score_history from best score if not tracked
             logger.warning("Score history not found in _analysis_results. Creating fallback.")
             best_result["final_ai_data"]["score_history"] = [best_result["quality_score"]]
+        
+        # CRITICAL FIX 2 SUMMARY: Best result now contains ONLY the best iteration data
+        # EXPLANATION: We only update best_result["final_ai_data"] when score improves, preventing quality deterioration
+        logger.info(f"Best result contains data from iteration with score {best_result['quality_score']:.2f}")
         
         return best_result
     
@@ -2015,14 +2297,14 @@ Be honest and strict in your evaluation."""
             
             # RULE 1: Sensors should NOT be sources (CRITICAL FIX 2)
             if from_type in sensor_types:
-                logger.warning(f"Invalid connection: Sensor {from_id} ({from_type}) cannot be source. Removing connection {from_id} → {to_id}.")
+                logger.warning(f"Invalid connection: Sensor {from_id} ({from_type}) cannot be source. Removing connection {from_id} -> {to_id}.")
                 removed_count += 1
                 continue
             
             # RULE 2: Control lines (ISA) should only connect to Valves
             if from_id in control_sources or from_type in control_sources or 'ISA' in from_label:
                 if to_type != 'Valve' and 'Valve' not in to_type:
-                    logger.warning(f"Invalid connection: Control line {from_id} → {to_id} ({to_type}). Control lines should only connect to Valves. Removing connection.")
+                    logger.warning(f"Invalid connection: Control line {from_id} -> {to_id} ({to_type}). Control lines should only connect to Valves. Removing connection.")
                     removed_count += 1
                     continue
                 # Mark as control connection
@@ -2031,7 +2313,7 @@ Be honest and strict in your evaluation."""
             # RULE 3: Reverse invalid connections (Sensor → Source/Pump)
             # If connection is backwards (Sensor → Pump), try to reverse it
             if from_type in sensor_types and to_type in source_types:
-                logger.warning(f"Reversing invalid connection: {from_id} → {to_id} (Sensor → Source). New: {to_id} → {from_id}")
+                logger.warning(f"Reversing invalid connection: {from_id} -> {to_id} (Sensor -> Source). New: {to_id} -> {from_id}")
                 # Reverse connection
                 conn_copy = conn.copy()
                 conn_copy['from_id'] = to_id
@@ -2043,14 +2325,14 @@ Be honest and strict in your evaluation."""
             # RULE 4: Remove connections where Source has input (except if it's a feedback loop, but we'll be conservative)
             # This is less critical, so we'll just log it
             if from_type in sink_types and to_type in source_types:
-                logger.debug(f"Potentially invalid connection: Sink {from_id} → Source {to_id}. This might be a feedback loop, keeping it.")
+                logger.debug(f"Potentially invalid connection: Sink {from_id} -> Source {to_id}. This might be a feedback loop, keeping it.")
             
             # Connection is valid
             validated_connections.append(conn)
         
         if removed_count > 0 or reversed_count > 0:
             logger.info(f"Connection validation: Removed {removed_count} invalid connections, reversed {reversed_count} connections. "
-                       f"Total: {len(connections)} → {len(validated_connections)}")
+                       f"Total: {len(connections)} -> {len(validated_connections)}")
         
         return validated_connections
     
@@ -2192,6 +2474,93 @@ Be honest and strict in your evaluation."""
         # Store CV results for later use
         self._analysis_results['cv_pipeline_lines'] = pipeline_lines
         self._analysis_results['cv_line_segments'] = line_segments
+    
+    def _run_id_extraction(
+        self,
+        image_path: str
+    ) -> None:
+        """
+        Multi-layered ID extraction - robust, reliable ID extraction.
+        
+        FINAL FIX: Uses multiple strategies for maximum reliability:
+        1. OCR-based extraction (primary): Extract all text labels using Tesseract OCR
+        2. Bbox-based matching: Match element bboxes to nearest text labels
+        3. Pattern validation: Validate P&ID tag patterns
+        4. LLM fallback: Use LLM only if OCR fails
+        
+        This is much more robust and reliable than pure LLM-based correction.
+        
+        Args:
+            image_path: Path to the image
+        """
+        logger.info("=== Starting Multi-Layered ID Extraction ===")
+        
+        elements = self._analysis_results.get('elements', [])
+        connections = self._analysis_results.get('connections', [])
+        
+        if not elements:
+            logger.info("No elements to extract IDs for. Skipping ID extraction.")
+            return
+        
+        try:
+            from src.analyzer.analysis.id_extractor import IDExtractor
+            
+            # Initialize ID extractor
+            id_extractor = IDExtractor(
+                llm_client=self.llm_client,
+                config_service=self.config_service
+            )
+            
+            # Extract IDs
+            corrected_data = id_extractor.extract_ids(
+                image_path=image_path,
+                elements=elements,
+                connections=connections
+            )
+            
+            # Update analysis results with corrected IDs
+            if corrected_data:
+                corrected_elements = corrected_data.get('elements', elements)
+                corrected_connections = corrected_data.get('connections', connections)
+                
+                # Count changes
+                original_ids = {el.get('id') for el in elements}
+                corrected_ids = {el.get('id') for el in corrected_elements}
+                id_changes = len(original_ids.symmetric_difference(corrected_ids))
+                
+                # Count sources
+                ocr_count = sum(1 for el in corrected_elements if el.get('id_source') == 'ocr')
+                llm_count = sum(1 for el in corrected_elements if el.get('id_source') == 'llm')
+                original_count = sum(1 for el in corrected_elements if el.get('id_source') == 'original')
+                
+                if id_changes > 0:
+                    logger.info(f"ID extraction: {id_changes} IDs changed (OCR: {ocr_count}, LLM: {llm_count}, Original: {original_count})")
+                    self._analysis_results['elements'] = corrected_elements
+                    self._analysis_results['connections'] = corrected_connections
+                    self._analysis_results['id_extraction_applied'] = True
+                    self._analysis_results['id_extraction_stats'] = {
+                        'ocr_count': ocr_count,
+                        'llm_count': llm_count,
+                        'original_count': original_count,
+                        'total_changes': id_changes
+                    }
+                else:
+                    logger.info(f"ID extraction: No ID changes detected (OCR: {ocr_count}, LLM: {llm_count}, Original: {original_count})")
+                    self._analysis_results['id_extraction_applied'] = False
+                    self._analysis_results['id_extraction_stats'] = {
+                        'ocr_count': ocr_count,
+                        'llm_count': llm_count,
+                        'original_count': original_count,
+                        'total_changes': 0
+                    }
+            else:
+                logger.warning("ID extraction returned empty result. Keeping original IDs.")
+                self._analysis_results['id_extraction_applied'] = False
+                
+        except Exception as e:
+            logger.error(f"Error in ID extraction: {e}", exc_info=True)
+            logger.warning("Continuing with original IDs")
+            self._analysis_results['id_extraction_applied'] = False
     
     def _run_visual_feedback_validation(
         self,
@@ -2586,32 +2955,96 @@ Be honest and strict in your evaluation."""
             
             error_feedback_str = "\n".join(error_feedback) if error_feedback else ""
             
-            # Create analyzer with error feedback
-            swarm_analyzer = SwarmAnalyzer(
-                self.llm_client,
-                self.knowledge_manager,
-                self.config_service,
-                self.model_strategy,
-                self.active_logic_parameters
-            )
+            # CRITICAL FIX: Respect use_swarm_analysis flag
+            use_swarm = self.active_logic_parameters.get('use_swarm_analysis', True)
+            use_monolith = self.active_logic_parameters.get('use_monolith_analysis', True)
             
-            # Set error feedback in analyzer
-            swarm_analyzer.error_feedback = error_feedback_str
-            swarm_analyzer.legend_context = {
-                'symbol_map': self._global_knowledge_repo.get('symbol_map', {}),
-                'line_map': self._global_knowledge_repo.get('line_map', {})
-            }
-            
-            # Re-analyze using swarm (tile-based for precision)
-            logger.info("Re-analyzing problematic areas with error feedback...")
             output_path = Path(output_dir)
-            swarm_result = swarm_analyzer.analyze(
-                image_path,
-                output_path,
-                self._excluded_zones
-            )
+            reanalysis_result = None
+            
+            # Use Swarm if enabled (default) or Monolith if Swarm is disabled
+            if use_swarm:
+                logger.info("Re-analyzing problematic areas with Swarm (tile-based for precision)...")
+                # Create analyzer with error feedback
+                swarm_analyzer = SwarmAnalyzer(
+                    self.llm_client,
+                    self.knowledge_manager,
+                    self.config_service,
+                    self.model_strategy,
+                    self.active_logic_parameters
+                )
+                
+                # Set error feedback in analyzer
+                swarm_analyzer.error_feedback = error_feedback_str
+                swarm_analyzer.legend_context = {
+                    'symbol_map': self._global_knowledge_repo.get('symbol_map', {}),
+                    'line_map': self._global_knowledge_repo.get('line_map', {})
+                }
+                
+                reanalysis_result = swarm_analyzer.analyze(
+                    image_path,
+                    output_path,
+                    self._excluded_zones
+                )
+            elif use_monolith:
+                logger.info("Re-analyzing problematic areas with Monolith (whole-image analysis)...")
+                from src.analyzer.analysis import MonolithAnalyzer
+                
+                # Create Monolith analyzer with error feedback
+                monolith_analyzer = MonolithAnalyzer(
+                    self.llm_client,
+                    self.knowledge_manager,
+                    self.config_service,
+                    self.model_strategy,
+                    self.active_logic_parameters
+                )
+                
+                # Set error feedback (MonolithAnalyzer supports error_feedback as attribute)
+                monolith_analyzer.error_feedback = error_feedback_str
+                monolith_analyzer.legend_context = {
+                    'symbol_map': self._global_knowledge_repo.get('symbol_map', {}),
+                    'line_map': self._global_knowledge_repo.get('line_map', {})
+                }
+                
+                reanalysis_result = monolith_analyzer.analyze(
+                    image_path,
+                    output_path,
+                    self._excluded_zones
+                )
+            else:
+                logger.warning("Both Swarm and Monolith are disabled. Skipping re-analysis.")
+                return self._analysis_results
+            
+            # Rename for clarity
+            swarm_result = reanalysis_result
             
             if swarm_result:
+                # CRITICAL FIX 5: Quality check before merging re-analysis results
+                # PROBLEM: Previous code always merged re-analysis results, even if they made things worse
+                # SOLUTION: Calculate quality before and after merge, only accept if quality improves
+                # EXPLANATION: This prevents quality deterioration from bad re-analysis results
+                
+                # Calculate quality score BEFORE merge
+                from src.analyzer.evaluation.kpi_calculator import KPICalculator
+                kpi_calculator = KPICalculator()
+                kpis_before = kpi_calculator.calculate_comprehensive_kpis(self._analysis_results, None)
+                quality_before = kpis_before.get('quality_score', 0.0)
+                
+                # Fallback calculation if quality_score is 0
+                if quality_before == 0.0:
+                    elements_before = self._analysis_results.get("elements", [])
+                    connections_before = self._analysis_results.get("connections", [])
+                    quality_before = 50.0
+                    if elements_before:
+                        avg_confidence = sum(el.get('confidence', 0.5) for el in elements_before) / len(elements_before)
+                        quality_before += min(len(elements_before) * 1.5, 25.0)
+                        quality_before += avg_confidence * 15.0
+                    if connections_before:
+                        avg_conn_confidence = sum(conn.get('confidence', 0.5) for conn in connections_before) / len(connections_before)
+                        quality_before += min(len(connections_before) * 1.0, 15.0)
+                        quality_before += avg_conn_confidence * 10.0
+                    quality_before = min(max(quality_before, 0.0), 100.0)
+                
                 # Merge with existing results (prioritize new results)
                 current_elements = self._analysis_results.get('elements', [])
                 current_connections = self._analysis_results.get('connections', [])
@@ -2630,44 +3063,61 @@ Be honest and strict in your evaluation."""
                 merged_elements = filtered_current + new_unique
                 merged_connections = current_connections + new_connections
                 
-                self._analysis_results['elements'] = merged_elements
-                self._analysis_results['connections'] = merged_connections
+                # Calculate quality score AFTER merge
+                merged_results_temp = {
+                    'elements': merged_elements,
+                    'connections': merged_connections
+                }
+                kpis_after = kpi_calculator.calculate_comprehensive_kpis(merged_results_temp, None)
+                quality_after = kpis_after.get('quality_score', 0.0)
                 
-                logger.info(f"Re-analysis complete: {len(merged_elements)} elements, {len(merged_connections)} connections")
+                # Fallback calculation if quality_score is 0
+                if quality_after == 0.0:
+                    quality_after = 50.0
+                    if merged_elements:
+                        avg_confidence = sum(el.get('confidence', 0.5) for el in merged_elements) / len(merged_elements)
+                        quality_after += min(len(merged_elements) * 1.5, 25.0)
+                        quality_after += avg_confidence * 15.0
+                    if merged_connections:
+                        avg_conn_confidence = sum(conn.get('confidence', 0.5) for conn in merged_connections) / len(merged_connections)
+                        quality_after += min(len(merged_connections) * 1.0, 15.0)
+                        quality_after += avg_conn_confidence * 10.0
+                    quality_after = min(max(quality_after, 0.0), 100.0)
                 
-                # Learn from corrections immediately
-                try:
-                    # CRITICAL FIX: Calculate quality score directly from validation
-                    # Use the same method as in _run_phase_3_validation_and_critic
-                    from src.analyzer.evaluation.kpi_calculator import KPICalculator
-                    kpi_calculator = KPICalculator()
-                    kpis = kpi_calculator.calculate_comprehensive_kpis(self._analysis_results, None)
-                    quality_score = kpis.get('quality_score', 0.0)
+                # CRITICAL: Only accept merge if quality improved
+                min_improvement = self.active_logic_parameters.get('min_improvement_threshold', 0.5)
+                quality_improved = quality_after > (quality_before + min_improvement)
+                
+                if quality_improved:
+                    # Quality improved - accept merge
+                    improvement = quality_after - quality_before
+                    logger.info(f"Re-analysis improved quality: {quality_before:.2f} -> {quality_after:.2f} (+{improvement:.2f}). Accepting merge.")
+                    self._analysis_results['elements'] = merged_elements
+                    self._analysis_results['connections'] = merged_connections
+                    logger.info(f"Re-analysis complete: {len(merged_elements)} elements, {len(merged_connections)} connections")
                     
-                    # Fallback calculation if quality_score is 0
-                    if quality_score == 0.0:
-                        elements = self._analysis_results.get("elements", [])
-                        connections = self._analysis_results.get("connections", [])
-                        quality_score = 50.0  # Base score
-                        if elements:
-                            avg_confidence = sum(el.get('confidence', 0.5) for el in elements) / len(elements)
-                            quality_score += min(len(elements) * 1.5, 25.0)
-                            quality_score += avg_confidence * 15.0
-                        if connections:
-                            avg_conn_confidence = sum(conn.get('confidence', 0.5) for conn in connections) / len(connections)
-                            quality_score += min(len(connections) * 1.0, 15.0)
-                            quality_score += avg_conn_confidence * 10.0
-                        quality_score = min(max(quality_score, 0.0), 100.0)
-                    
-                    self.active_learner.learn_from_analysis_result(
-                        analysis_result=self._analysis_results,
-                        truth_data=None,  # Can be enhanced with truth data
-                        quality_score=quality_score
-                    )
-                    logger.info("Live learning: Learned from re-analysis corrections")
-                except Exception as e:
-                    logger.warning(f"Error in live learning: {e}")
+                    # Learn from corrections immediately (only if quality improved)
+                    try:
+                        self.active_learner.learn_from_analysis_result(
+                            analysis_result=self._analysis_results,
+                            truth_data=None,  # Can be enhanced with truth data
+                            quality_score=quality_after
+                        )
+                        logger.info("Live learning: Learned from re-analysis corrections")
+                    except Exception as e:
+                        logger.warning(f"Error in live learning: {e}")
+                else:
+                    # Quality didn't improve - reject merge, keep original results
+                    if quality_after < quality_before:
+                        logger.warning(f"Re-analysis deteriorated quality: {quality_before:.2f} -> {quality_after:.2f}. Rejecting merge, keeping original results.")
+                    else:
+                        logger.info(f"Re-analysis did not improve quality significantly: {quality_before:.2f} -> {quality_after:.2f} (threshold: {min_improvement:.2f}). Keeping original results.")
+                    # CRITICAL FIX: Return original results (not merged) if quality didn't improve
+                    # This ensures only the best results are passed to the next iteration
+                    return self._analysis_results  # Return original, unchanged results
             
+            # CRITICAL FIX: Only return updated results if quality improved
+            # If we reach here, quality_improved was True and self._analysis_results was updated
             return self._analysis_results
             
         except Exception as e:
@@ -2743,6 +3193,20 @@ Be honest and strict in your evaluation."""
         score_history = best_result.get("final_ai_data", {}).get("score_history", [])
         if output_dir:
             self._generate_visualizations(output_dir, image_path, normalized_final_data, kpis, score_history)
+        
+        # CRITICAL FIX 6: Cleanup temporary files at end of pipeline
+        # PROBLEM: Temp directories (temp_quadrants, temp_polylines) were left in output folders
+        # SOLUTION: Remove all temp/ subdirectories after pipeline completion
+        # EXPLANATION: This prevents output folders from being filled with temporary files
+        output_path = Path(output_dir)
+        temp_dir = output_path / "temp"
+        if temp_dir.exists():
+            try:
+                import shutil
+                shutil.rmtree(temp_dir)
+                logger.info(f"Cleaned up temporary files: {temp_dir}")
+            except Exception as e:
+                logger.warning(f"Could not clean up temp directory {temp_dir}: {e}")
         
         logger.info(f"Post-processing complete: {len(elements_models)} elements, {len(connections_models)} connections (after normalization)")
         

@@ -102,52 +102,79 @@ class MonolithAnalyzer(IAnalyzer):
         
         excluded_zones = excluded_zones or []
         
-        # CRITICAL: Check for simple_whole_image strategy (monolith_whole_image flag)
-        # This strategy uses a single strong model call on the whole image (no quadrants, no tiles)
-        # PROVEN: Swarm (Tiles) is worse for simple images - whole-image analysis is better
+        # CRITICAL FIX 7: Monolith Quadrant Strategy - Whole image for small/complex, option for 4 or max 6 quadrants
+        # PROBLEM: Previous adaptive strategy could use 9 quadrants, breaking structure
+        # SOLUTION: Default to whole image, but allow explicit 4 or max 6 quadrants option
+        # EXPLANATION: Whole image provides full context for better connection detection. Quadrants should only be used
+        #              when whole image fails (token limits) or for A/B testing. Max 6 quadrants prevents structure breakdown.
+        
         monolith_whole_image = self.model_strategy.get('monolith_whole_image', False)
+        quadrant_strategy = self.model_strategy.get('monolith_quadrant_strategy', 'adaptive')
         
+        # CRITICAL: If monolith_whole_image is true, ALWAYS use whole image (for both simple and complex images)
         if monolith_whole_image:
-            # Simple-Whole-Image Strategy: Analyze entire image in one call
-            logger.info("Using Simple-Whole-Image Strategy: Analyzing entire image in single call (no quadrants)")
+            # Whole-Image Strategy: Analyze entire image in one call (BEST for connection detection)
+            logger.info("Using Whole-Image Strategy: Analyzing entire image in single call (no quadrants)")
+            logger.info("EXPLANATION: Whole image provides full context for optimal connection detection in both simple and complex P&IDs")
             legend_context = getattr(self, 'legend_context', None)
             return self._analyze_whole_image(image_path, legend_context)
         
-        # ADAPTIVE QUADRANT STRATEGY: Calculate optimal number of quadrants based on image size
-        # This replaces the fixed 3000px threshold with an adaptive approach
-        # OPTIMIZATION: Use whole-image for small images to get full context (better connection detection)
+        # QUADRANT STRATEGY: Only used if monolith_whole_image is false
+        # Options: "whole_image" | "4" | "6" | "adaptive"
         max_dimension = max(img_width, img_height)
-        num_quadrants = self._calculate_optimal_quadrant_strategy(img_width, img_height)
         
-        if num_quadrants == 0:
-            # Very small image - use whole image analysis
-            # OPTIMIZATION: Whole-image provides full context for better connection detection
-            logger.info(f"Image is very small ({max_dimension}px), using whole-image analysis instead of quadrants "
-                       f"(full context for optimal connection detection)")
+        if quadrant_strategy == "whole_image":
+            # Explicit whole image request (even if monolith_whole_image is false)
+            logger.info(f"Quadrant strategy 'whole_image' specified: Using whole-image analysis for {img_width}x{img_height} image")
             legend_context = getattr(self, 'legend_context', None)
             return self._analyze_whole_image(image_path, legend_context)
+        elif quadrant_strategy == "4":
+            # Explicit 4 quadrants (2x2 grid)
+            num_quadrants = 4
+            logger.info(f"Quadrant strategy '4' specified: Using 4 quadrants (2x2) for {img_width}x{img_height} image")
+        elif quadrant_strategy == "6":
+            # Explicit 6 quadrants (2x3 grid) - MAXIMUM allowed
+            num_quadrants = 6
+            logger.info(f"Quadrant strategy '6' specified: Using 6 quadrants (2x3) for {img_width}x{img_height} image")
+        else:
+            # Adaptive strategy: Calculate optimal number, but MAX 6 quadrants
+            num_quadrants = self._calculate_optimal_quadrant_strategy(img_width, img_height)
+            # CRITICAL: Cap at 6 quadrants maximum (prevents structure breakdown)
+            if num_quadrants > 6:
+                logger.warning(f"Adaptive strategy calculated {num_quadrants} quadrants, but capping at 6 (maximum allowed)")
+                num_quadrants = 6
+            
+            if num_quadrants == 0:
+                # Very small image - use whole image analysis
+                logger.info(f"Image is very small ({max_dimension}px), using whole-image analysis instead of quadrants "
+                           f"(full context for optimal connection detection)")
+                legend_context = getattr(self, 'legend_context', None)
+                return self._analyze_whole_image(image_path, legend_context)
         
-        logger.info(f"Adaptive quadrant strategy: Using {num_quadrants} quadrants for {img_width}x{img_height} image ({max_dimension}px)")
+        logger.info(f"Quadrant strategy: Using {num_quadrants} quadrants for {img_width}x{img_height} image ({max_dimension}px)")
         
-        # Adaptive tile size based on image dimension (not grid-based)
-        # Strategy 1: 3000-6000px → 4 Quadranten, 60% Tile-Size, 25% Overlap
-        # Strategy 2: 6000-10000px → 6 Quadranten, 50% Tile-Size, 30% Overlap
-        # Strategy 3: >10000px → 8-9 Quadranten, 40% Tile-Size, 35% Overlap
-        if max_dimension < 6000:
+        # CRITICAL FIX 7: Adaptive tile size based on quadrant count (4 or 6 only)
+        # PROBLEM: Previous code had strategy for 8-9 quadrants, which breaks structure
+        # SOLUTION: Only support 4 quadrants (2x2) or 6 quadrants (2x3)
+        # EXPLANATION: More than 6 quadrants breaks structure, causes connection errors
+        
+        if num_quadrants == 4:
             # Strategy 1: 4 Quadranten (2x2 grid)
             grid_cols, grid_rows = 2, 2
             tile_size_percentage = 0.60  # 60% of max dimension
             overlap_percentage = 0.25  # 25% Overlap
-        elif max_dimension < 10000:
-            # Strategy 2: 6 Quadranten (2x3 grid)
+        elif num_quadrants == 6:
+            # Strategy 2: 6 Quadranten (2x3 grid) - MAXIMUM
             grid_cols, grid_rows = 2, 3
             tile_size_percentage = 0.50  # 50% of max dimension
             overlap_percentage = 0.30  # 30% Overlap
         else:
-            # Strategy 3: 8-9 Quadranten (3x3 grid for very large)
-            grid_cols, grid_rows = 3, 3
-            tile_size_percentage = 0.40  # 40% of max dimension
-            overlap_percentage = 0.35  # 35% Overlap
+            # Fallback: Use 4 quadrants for any other value
+            logger.warning(f"Invalid quadrant count {num_quadrants}, using 4 quadrants (2x2) as fallback")
+            num_quadrants = 4
+            grid_cols, grid_rows = 2, 2
+            tile_size_percentage = 0.60
+            overlap_percentage = 0.25
         
         # Calculate tile size as percentage of max dimension (adaptive, not grid-based)
         tile_size = int(max_dimension * tile_size_percentage)
@@ -188,6 +215,12 @@ class MonolithAnalyzer(IAnalyzer):
         )
         synthesizer = GraphSynthesizer(raw_results, img_width, img_height, config=synthesizer_config)
         monolith_graph = synthesizer.synthesize()
+        
+        # CRITICAL FIX 2: Set source attribute for all elements and connections
+        for el in monolith_graph.get('elements', []):
+            el['source'] = 'monolith'
+        for conn in monolith_graph.get('connections', []):
+            conn['source'] = 'monolith'
         
         # Clean up
         if temp_dir_path.exists():
@@ -244,132 +277,41 @@ class MonolithAnalyzer(IAnalyzer):
             # If parsing fails, treat as empty list
             elements_list = []
         
-        # CRITICAL: For simple P&IDs, if element_list_json is empty, Monolith should recognize elements AND connections
-        # Use different prompt template if element_list_json is empty (simple P&ID mode)
-        if not elements_list:
-            # Simple P&ID mode: Monolith recognizes elements AND connections independently
-            logger.info("CRITICAL: element_list_json is empty - Monolith will recognize elements AND connections independently")
-            # Use a modified prompt that allows element detection
-            monolith_prompt_template_simple = monolith_prompt_template.replace(
-                "**TASK:** Your ONLY task is to find ALL connections (lines/pipes) between the elements provided in the knowledge base.",
-                "**TASK:** Find ALL elements (components) AND ALL connections (lines/pipes) in the P&ID diagram."
-            ).replace(
-                "**CRITICAL KNOWLEDGE BASE (INPUT):**\nHere is a complete JSON list of all known elements on the diagram. You MUST use their exact IDs.\n`{element_list_json}`",
-                "**CRITICAL:** You must recognize elements AND connections independently. No element list is provided - you must detect all elements yourself."
-            ).replace(
-                "**CRITICAL RULES (STRICTLY ENFORCE):**\n1. **ONLY DETECT CONNECTIONS.** Do NOT detect elements.",
-                "**CRITICAL RULES (STRICTLY ENFORCE):**\n1. **DETECT BOTH ELEMENTS AND CONNECTIONS.** You must find all components and all connections between them."
-            ).replace(
-                "2. Use the EXACT element IDs from the knowledge base for `\"from_id\"` and `\"to_id\"`.",
-                "2. Use the EXACT element IDs you detect for `\"from_id\"` and `\"to_id\"` in connections."
-            ).replace(
-                "5. IGNORE connections to elements NOT in the provided list.",
-                "5. Find ALL connections between ALL elements you detect."
-            ).replace(
-                "**1. \"elements\" List:**\n- CRITICAL: Provide an EMPTY list. You MUST NOT detect elements.\n- ` \"elements\": [] `",
-                "**1. \"elements\" List:**\n- Find ALL components (pumps, valves, sensors, etc.) in the diagram.\n- REQUIRED KEYS: `\"id\"`, `\"type\"`, `\"label\"`, `\"bbox\"`, `\"confidence\"`.\n- **`\"ports\"`**: (MANDATORY) List of ports for this element. Each port must have: `\"id\"` (e.g., \"in_1\", \"out_1\", \"control_1\"), `\"name\"` (e.g., \"In\", \"Out\", \"Control\"), `\"type\"` (\"input\", \"output\", or \"control\").\n  - **Input ports**: For elements that receive flow FROM other elements (most elements have at least 1 input)\n  - **Output ports**: For elements that send flow TO other elements (most elements have at least 1 output)\n  - **Control ports**: For Valves that receive control signals (e.g., from ISA/Instrument Air Supply)\n  - **CRITICAL**: If you cannot determine ports visually, provide default ports: `[{\"id\": \"in_1\", \"name\": \"In\", \"type\": \"input\"}, {\"id\": \"out_1\", \"name\": \"Out\", \"type\": \"output\"}]`\n  - **CRITICAL**: Valves MUST have a control port if control lines are visible: `{\"id\": \"control_1\", \"name\": \"Control\", \"type\": \"control\"}`"
-            )
-            monolith_prompt = monolith_prompt_template_simple.replace(
-                "{ignore_zones_str}", "[]"
-            ).replace(
-                "[{component_list_str}]", f"[{component_list_str}]"
-            ).replace(
-                "{element_list_json}", "[]"  # Empty - Monolith recognizes elements itself
-            ).replace(
-                "{legend_context}", legend_context_str
-            ).replace(
-                "{viewshot_valve_examples}", viewshot_context.get('valve', '')
-            ).replace(
-                "{viewshot_flow_sensor_examples}", viewshot_context.get('flow_sensor', '')
-            ).replace(
-                "{viewshot_mixer_examples}", viewshot_context.get('mixer', '')
-            ).replace(
-                "{viewshot_source_examples}", viewshot_context.get('source', '')
-            ).replace(
-                "{viewshot_sample_point_examples}", viewshot_context.get('sample_point', '')
-            ).replace(
-                "{viewshot_pump_examples}", viewshot_context.get('pump', '')
-            ).replace(
-                "{viewshot_sink_examples}", viewshot_context.get('sink', '')
-            ).replace(
-                "{viewshot_section}", viewshot_context.get('section', '')
-            )
-        else:
-            # Complex P&ID mode: Monolith recognizes connections (with element list as input)
-            # CRITICAL: Also allow Monolith to detect ADDITIONAL elements from legend that Swarm missed
-            # Check if legend has symbol_map (indicates legend is present)
-            has_legend_symbols = False
-            if legend_context and legend_context.get('symbol_map'):
-                has_legend_symbols = True
-                symbol_map = legend_context.get('symbol_map', {})
-                logger.info(f"Legend detected with {len(symbol_map)} symbols. Monolith can detect additional elements from legend.")
-            
-            # If legend is present, modify prompt to allow additional element detection
-            if has_legend_symbols:
-                # Enhanced prompt: Monolith can detect connections AND additional elements from legend
-                monolith_prompt_enhanced = monolith_prompt_template.replace(
-                    "**TASK:** Your ONLY task is to find ALL connections (lines/pipes) between the elements provided in the knowledge base.",
-                    "**TASK:** Find ALL connections (lines/pipes) between the elements provided in the knowledge base. Additionally, if you find symbols from the legend that are NOT in the element list, also detect them."
-                ).replace(
-                    "**CRITICAL RULES (STRICTLY ENFORCE):**\n1. **ONLY DETECT CONNECTIONS.** Do NOT detect elements.",
-                    "**CRITICAL RULES (STRICTLY ENFORCE):**\n1. **PRIMARY TASK: DETECT CONNECTIONS** between elements in the knowledge base.\n2. **SECONDARY TASK: DETECT ADDITIONAL ELEMENTS** from the legend that are NOT in the element list."
-                ).replace(
-                    "**1. \"elements\" List:**\n- CRITICAL: Provide an EMPTY list. You MUST NOT detect elements.\n- ` \"elements\": [] `",
-                    "**1. \"elements\" List:**\n- PRIMARY: Provide an EMPTY list (connections are your main task).\n- SECONDARY: If you find symbols from the legend that are NOT in the element list above, add them here.\n- Only add elements that match symbols in the legend symbol map.\n- Use EXACT type names from the legend (case-sensitive, exact spacing).\n- REQUIRED KEYS: `\"id\"`, `\"type\"`, `\"label\"`, `\"bbox\"`, `\"confidence\"`.\n- **`\"ports\"`**: (MANDATORY) List of ports for this element. Each port must have: `\"id\"` (e.g., \"in_1\", \"out_1\", \"control_1\"), `\"name\"` (e.g., \"In\", \"Out\", \"Control\"), `\"type\"` (\"input\", \"output\", or \"control\").\n  - **Input ports**: For elements that receive flow FROM other elements (most elements have at least 1 input)\n  - **Output ports**: For elements that send flow TO other elements (most elements have at least 1 output)\n  - **Control ports**: For Valves that receive control signals (e.g., from ISA/Instrument Air Supply)\n  - **CRITICAL**: If you cannot determine ports visually, provide default ports: `[{\"id\": \"in_1\", \"name\": \"In\", \"type\": \"input\"}, {\"id\": \"out_1\", \"name\": \"Out\", \"type\": \"output\"}]`\n  - **CRITICAL**: Valves MUST have a control port if control lines are visible: `{\"id\": \"control_1\", \"name\": \"Control\", \"type\": \"control\"}`"
-                )
-                
-                monolith_prompt = monolith_prompt_enhanced.replace(
-                    "{ignore_zones_str}", "[]"
-                ).replace(
-                    "[{component_list_str}]", f"[{component_list_str}]"
-                ).replace(
-                    "{element_list_json}", json.dumps(elements_list, ensure_ascii=False) if elements_list else "[]"  # Use provided element list
-                ).replace(
-                    "{legend_context}", legend_context_str
-                ).replace(
-                    "{viewshot_valve_examples}", viewshot_context.get('valve', '')
-                ).replace(
-                    "{viewshot_flow_sensor_examples}", viewshot_context.get('flow_sensor', '')
-                ).replace(
-                    "{viewshot_mixer_examples}", viewshot_context.get('mixer', '')
-                ).replace(
-                    "{viewshot_source_examples}", viewshot_context.get('source', '')
-                ).replace(
-                    "{viewshot_sample_point_examples}", viewshot_context.get('sample_point', '')
-                ).replace(
-                    "{viewshot_pump_examples}", viewshot_context.get('pump', '')
-                ).replace(
-                    "{viewshot_sink_examples}", viewshot_context.get('sink', '')
-                ).replace(
-                    "{viewshot_section}", viewshot_context.get('section', '')
-                )
-            else:
-                # No legend: Standard prompt (only connections, no additional elements)
-                monolith_prompt = monolith_prompt_template.replace(
-                    "{ignore_zones_str}", "[]"
-                ).replace(
-                    "[{component_list_str}]", f"[{component_list_str}]"
-                ).replace(
-                    "{element_list_json}", json.dumps(elements_list, ensure_ascii=False) if elements_list else "[]"  # Use provided element list
-                ).replace(
-                    "{legend_context}", legend_context_str
-                ).replace(
-                    "{viewshot_valve_examples}", viewshot_context.get('valve', '')
-                ).replace(
-                    "{viewshot_flow_sensor_examples}", viewshot_context.get('flow_sensor', '')
-                ).replace(
-                    "{viewshot_mixer_examples}", viewshot_context.get('mixer', '')
-                ).replace(
-                    "{viewshot_source_examples}", viewshot_context.get('source', '')
-                ).replace(
-                    "{viewshot_sample_point_examples}", viewshot_context.get('sample_point', '')
-                ).replace(
-                    "{viewshot_pump_examples}", viewshot_context.get('pump', '')
-                ).replace(
-                    "{viewshot_sink_examples}", viewshot_context.get('sink', '')
-                ).replace(
-                    "{viewshot_section}", viewshot_context.get('section', '')
-                )
+        # CRITICAL FIX: Use prompt directly from config.yaml - NO MORE .replace() calls that modify the prompt structure!
+        # The new prompts in config.yaml already have the correct structure:
+        # - "PRIMARY TASK: DETECT CONNECTIONS"
+        # - "SECONDARY TASK: DETECT ADDITIONAL ELEMENTS"
+        # - ID correction rules
+        # We ONLY need to replace placeholders like {element_list_json}, {legend_context}, etc.
+        
+        logger.info(f"Using Monolith prompt from config.yaml (element_list_json has {len(elements_list)} elements)")
+        
+        # Build monolith prompt by ONLY replacing placeholders (no structural changes)
+        monolith_prompt = monolith_prompt_template.replace(
+            "{ignore_zones_str}", "[]"
+        ).replace(
+            "[{component_list_str}]", f"[{component_list_str}]"
+        ).replace(
+            "{element_list_json}", json.dumps(elements_list, ensure_ascii=False) if elements_list else "[]"
+        ).replace(
+            "{legend_context}", legend_context_str
+        ).replace(
+            "{viewshot_valve_examples}", viewshot_context.get('valve', '')
+        ).replace(
+            "{viewshot_flow_sensor_examples}", viewshot_context.get('flow_sensor', '')
+        ).replace(
+            "{viewshot_mixer_examples}", viewshot_context.get('mixer', '')
+        ).replace(
+            "{viewshot_source_examples}", viewshot_context.get('source', '')
+        ).replace(
+            "{viewshot_sample_point_examples}", viewshot_context.get('sample_point', '')
+        ).replace(
+            "{viewshot_pump_examples}", viewshot_context.get('pump', '')
+        ).replace(
+            "{viewshot_sink_examples}", viewshot_context.get('sink', '')
+        ).replace(
+            "{viewshot_section}", viewshot_context.get('section', '')
+        )
         
         # Add error feedback if available
         error_feedback_str = getattr(self, 'error_feedback', None) or ""
@@ -475,23 +417,27 @@ class MonolithAnalyzer(IAnalyzer):
         """
         Calculate optimal number of quadrants based on image size.
         
+        CRITICAL FIX 7: Maximum 6 quadrants (prevents structure breakdown)
+        PROBLEM: Previous strategy could use 9 quadrants, breaking structure and causing connection errors
+        SOLUTION: Cap at 6 quadrants maximum (2x3 grid)
+        EXPLANATION: More than 6 quadrants breaks structure, causes connection errors across quadrant boundaries
+        
         Adaptive strategy:
-        - Very small images (<2000px): 0 (whole image)
+        - Very small images (<2000px): 0 (whole image) - BEST for connection detection
         - Small images (2000-4000px): 4 quadrants (2x2)
-        - Medium images (4000-8000px): 6 quadrants (2x3)
-        - Large images (>8000px): 9 quadrants (3x3)
+        - Medium/Large images (>4000px): 6 quadrants (2x3) - MAXIMUM
         
         Args:
             img_width: Image width in pixels
             img_height: Image height in pixels
             
         Returns:
-            Number of quadrants to use (0 = whole image, 4/6/9 = quadrant count)
+            Number of quadrants to use (0 = whole image, 4 or 6 = quadrant count, MAX 6)
         """
         max_dimension = max(img_width, img_height)
         total_pixels = img_width * img_height
         
-        # Very small images: use whole image
+        # Very small images: use whole image (BEST for connection detection)
         if max_dimension < 2000 or total_pixels < 4_000_000:  # <4MP
             return 0
         
@@ -499,12 +445,9 @@ class MonolithAnalyzer(IAnalyzer):
         if max_dimension < 4000 or total_pixels < 16_000_000:  # <16MP
             return 4
         
-        # Medium images: 6 quadrants (2x3)
-        if max_dimension < 8000 or total_pixels < 64_000_000:  # <64MP
-            return 6
-        
-        # Large images: 9 quadrants (3x3)
-        return 9
+        # Medium/Large images: 6 quadrants (2x3) - MAXIMUM
+        # CRITICAL: Never use more than 6 quadrants (prevents structure breakdown)
+        return 6
     
     def _analyze_whole_image(
         self,
@@ -561,150 +504,41 @@ class MonolithAnalyzer(IAnalyzer):
                 # If parsing fails, treat as empty list
                 elements_list = []
             
-            # CRITICAL: For simple P&IDs, if element_list_json is empty, Monolith should recognize elements AND connections
-            # Use different prompt template if element_list_json is empty (simple P&ID mode)
-            if not elements_list:
-                # Simple P&ID mode: Monolith recognizes elements AND connections independently
-                logger.info("CRITICAL: element_list_json is empty - Monolith will recognize elements AND connections independently")
-                # Use a modified prompt that allows element detection
-                monolith_prompt_template_simple = monolith_prompt_template.replace(
-                    "**TASK:** Your ONLY task is to find ALL connections (lines/pipes) between the elements provided in the knowledge base.",
-                    (
-                        "**TASK:** Find ALL elements (components) AND ALL connections (lines/pipes) in the P&ID diagram.\n"
-                        "**CRITICAL ID RULE:** The `id` you assign to an element MUST be the exact text label found on the diagram (e.g., 'P-201', 'FT-10'). This is essential for matching."
-                    )
-                ).replace(
-                    "**CRITICAL KNOWLEDGE BASE (INPUT):**\nHere is a complete JSON list of all known elements on the diagram. You MUST use their exact IDs.\n`{element_list_json}`",
-                    "**CRITICAL:** You must recognize elements AND connections independently. No element list is provided - you must detect all elements yourself."
-                ).replace(
-                    "**CRITICAL RULES (STRICTLY ENFORCE):**\n1. **ONLY DETECT CONNECTIONS.** Do NOT detect elements.",
-                    "**CRITICAL RULES (STRICTLY ENFORCE):**\n1. **DETECT BOTH ELEMENTS AND CONNECTIONS.** You must find all components and all connections between them."
-                ).replace(
-                    "2. Use the EXACT element IDs from the knowledge base for `\"from_id\"` and `\"to_id\"`.",
-                    "2. Use the EXACT element IDs you detect for `\"from_id\"` and `\"to_id\"` in connections."
-                ).replace(
-                    "5. IGNORE connections to elements NOT in the provided list.",
-                    "5. Find ALL connections between ALL elements you detect."
-                ).replace(
-                    "**1. \"elements\" List:**\n- CRITICAL: Provide an EMPTY list. You MUST NOT detect elements.\n- ` \"elements\": [] `",
-                    (
-                        "**1. \"elements\" List:**\n"
-                        "- Find ALL components (pumps, valves, sensors, etc.) in the diagram.\n"
-                        "- REQUIRED KEYS: `\"id\"`, `\"type\"`, `\"label\"`, `\"bbox\"`, `\"confidence\"`.\n"
-                        "- **`\"id\"`**: MUST be the text label visible on the diagram (e.g., 'P-201').\n"
-                        "- **`\"label\"`**: The descriptive label (e.g., 'From Transfer Pump P-201').\n"
-                        "- **`\"confidence\"`**: (float, 0.0-1.0) Your confidence (0.9+ = Very Sure, < 0.5 = Guessing)."
-                    )
-                ).replace(
-                    "**2. \"connections\" List:**\n- Find ALL connections (lines/pipes) between ALL elements you detect.",
-                    (
-                        "**2. \"connections\" List:**\n"
-                        "- Find ALL connections (lines/pipes) between ALL elements you detect.\n"
-                        "- REQUIRED KEYS: `\"from_id\"`, `\"to_id\"`, `\"confidence\"`.\n"
-                        "- **`\"confidence\"`**: (float, 0.0-1.0) Your confidence (0.9+ = Very Sure, < 0.5 = Guessing)."
-                    )
-                )
-                monolith_prompt = monolith_prompt_template_simple.replace(
-                    "{ignore_zones_str}", "[]"
-                ).replace(
-                    "[{component_list_str}]", f"[{component_list_str}]"
-                ).replace(
-                    "{element_list_json}", ""  # Empty - Monolith recognizes elements itself
-                ).replace(
-                    "{legend_context}", legend_context_str
-                ).replace(
-                    "{viewshot_valve_examples}", viewshot_context.get('valve', '')
-                ).replace(
-                    "{viewshot_flow_sensor_examples}", viewshot_context.get('flow_sensor', '')
-                ).replace(
-                    "{viewshot_mixer_examples}", viewshot_context.get('mixer', '')
-                ).replace(
-                    "{viewshot_source_examples}", viewshot_context.get('source', '')
-                ).replace(
-                    "{viewshot_sample_point_examples}", viewshot_context.get('sample_point', '')
-                ).replace(
-                    "{viewshot_pump_examples}", viewshot_context.get('pump', '')
-                ).replace(
-                    "{viewshot_sink_examples}", viewshot_context.get('sink', '')
-                ).replace(
-                    "{viewshot_section}", viewshot_context.get('section', '')
-                )
-            else:
-                # Complex P&ID mode: Monolith recognizes connections (with element list as input)
-                # CRITICAL: Also allow Monolith to detect ADDITIONAL elements from legend that Swarm missed
-                # Check if legend has symbol_map (indicates legend is present)
-                has_legend_symbols = False
-                if legend_context and legend_context.get('symbol_map'):
-                    has_legend_symbols = True
-                    symbol_map = legend_context.get('symbol_map', {})
-                    logger.info(f"Legend detected with {len(symbol_map)} symbols. Monolith can detect additional elements from legend.")
-                
-                # If legend is present, modify prompt to allow additional element detection
-                if has_legend_symbols:
-                    # Enhanced prompt: Monolith can detect connections AND additional elements from legend
-                    monolith_prompt_template_enhanced = monolith_prompt_template.replace(
-                        "**TASK:** Your ONLY task is to find ALL connections (lines/pipes) between the elements provided in the knowledge base.",
-                        "**TASK:** Find ALL connections (lines/pipes) between the elements provided in the knowledge base. Additionally, if you find symbols from the legend that are NOT in the element list, also detect them."
-                    ).replace(
-                        "**CRITICAL RULES (STRICTLY ENFORCE):**\n1. **ONLY DETECT CONNECTIONS.** Do NOT detect elements.",
-                        "**CRITICAL RULES (STRICTLY ENFORCE):**\n1. **PRIMARY TASK: DETECT CONNECTIONS** between elements in the knowledge base.\n2. **SECONDARY TASK: DETECT ADDITIONAL ELEMENTS** from the legend that are NOT in the element list."
-                    ).replace(
-                        "**1. \"elements\" List:**\n- CRITICAL: Provide an EMPTY list. You MUST NOT detect elements.\n- ` \"elements\": [] `",
-                        "**1. \"elements\" List:**\n- PRIMARY: Provide an EMPTY list (connections are your main task).\n- SECONDARY: If you find symbols from the legend that are NOT in the element list above, add them here.\n- Only add elements that match symbols in the legend symbol map.\n- Use EXACT type names from the legend (case-sensitive, exact spacing)."
-                    )
-                    
-                    monolith_prompt = monolith_prompt_template_enhanced.replace(
-                        "{ignore_zones_str}", "[]"
-                    ).replace(
-                        "[{component_list_str}]", f"[{component_list_str}]"
-                    ).replace(
-                        "{element_list_json}", element_list_json  # Use provided element list
-                    ).replace(
-                        "{legend_context}", legend_context_str
-                    ).replace(
-                        "{viewshot_valve_examples}", viewshot_context.get('valve', '')
-                    ).replace(
-                        "{viewshot_flow_sensor_examples}", viewshot_context.get('flow_sensor', '')
-                    ).replace(
-                        "{viewshot_mixer_examples}", viewshot_context.get('mixer', '')
-                    ).replace(
-                        "{viewshot_source_examples}", viewshot_context.get('source', '')
-                    ).replace(
-                        "{viewshot_sample_point_examples}", viewshot_context.get('sample_point', '')
-                    ).replace(
-                        "{viewshot_pump_examples}", viewshot_context.get('pump', '')
-                    ).replace(
-                        "{viewshot_sink_examples}", viewshot_context.get('sink', '')
-                    ).replace(
-                        "{viewshot_section}", viewshot_context.get('section', '')
-                    )
-                else:
-                    # No legend: Standard prompt (only connections, no additional elements)
-                    monolith_prompt = monolith_prompt_template.replace(
-                        "{ignore_zones_str}", "[]"
-                    ).replace(
-                        "[{component_list_str}]", f"[{component_list_str}]"
-                    ).replace(
-                        "{element_list_json}", element_list_json  # Use provided element list
-                    ).replace(
-                        "{legend_context}", legend_context_str
-                    ).replace(
-                        "{viewshot_valve_examples}", viewshot_context.get('valve', '')
-                    ).replace(
-                        "{viewshot_flow_sensor_examples}", viewshot_context.get('flow_sensor', '')
-                    ).replace(
-                        "{viewshot_mixer_examples}", viewshot_context.get('mixer', '')
-                    ).replace(
-                        "{viewshot_source_examples}", viewshot_context.get('source', '')
-                    ).replace(
-                        "{viewshot_sample_point_examples}", viewshot_context.get('sample_point', '')
-                    ).replace(
-                        "{viewshot_pump_examples}", viewshot_context.get('pump', '')
-                    ).replace(
-                        "{viewshot_sink_examples}", viewshot_context.get('sink', '')
-                    ).replace(
-                        "{viewshot_section}", viewshot_context.get('section', '')
-                    )
+            # CRITICAL FIX: Use prompt directly from config.yaml - NO MORE .replace() calls that modify the prompt structure!
+            # The new prompts in config.yaml already have the correct structure:
+            # - "PRIMARY TASK: DETECT CONNECTIONS"
+            # - "SECONDARY TASK: DETECT ADDITIONAL ELEMENTS"
+            # - ID correction rules
+            # We ONLY need to replace placeholders like {element_list_json}, {legend_context}, etc.
+            
+            logger.info(f"Using Monolith prompt from config.yaml (element_list_json has {len(elements_list)} elements)")
+            
+            # Build monolith prompt by ONLY replacing placeholders (no structural changes)
+            monolith_prompt = monolith_prompt_template.replace(
+                "{ignore_zones_str}", "[]"
+            ).replace(
+                "[{component_list_str}]", f"[{component_list_str}]"
+            ).replace(
+                "{element_list_json}", json.dumps(elements_list, ensure_ascii=False) if elements_list else "[]"
+            ).replace(
+                "{legend_context}", legend_context_str
+            ).replace(
+                "{viewshot_valve_examples}", viewshot_context.get('valve', '')
+            ).replace(
+                "{viewshot_flow_sensor_examples}", viewshot_context.get('flow_sensor', '')
+            ).replace(
+                "{viewshot_mixer_examples}", viewshot_context.get('mixer', '')
+            ).replace(
+                "{viewshot_source_examples}", viewshot_context.get('source', '')
+            ).replace(
+                "{viewshot_sample_point_examples}", viewshot_context.get('sample_point', '')
+            ).replace(
+                "{viewshot_pump_examples}", viewshot_context.get('pump', '')
+            ).replace(
+                "{viewshot_sink_examples}", viewshot_context.get('sink', '')
+            ).replace(
+                "{viewshot_section}", viewshot_context.get('section', '')
+            )
             
             # Add error feedback if available
             if self.error_feedback:
@@ -722,12 +556,14 @@ class MonolithAnalyzer(IAnalyzer):
                 logger.debug(f"[MONOLITH] Calling LLM with prompt length: {len(monolith_prompt)}")
                 logger.debug(f"[MONOLITH] Prompt preview: {monolith_prompt[:500]}...")
                 
+                # CRITICAL FIX: Don't require strict validation - let parser handle various formats
+                # The response validator was too strict and rejected valid responses
                 response = self.llm_client.call_llm(
                     detail_model_info,
                     system_prompt,
                     monolith_prompt,
                     image_path,
-                    expected_json_keys=["elements", "connections"]
+                    expected_json_keys=["elements", "connections"]  # Expected but not required
                 )
                 
                 # ENHANCED LOGGING: Log raw response
@@ -759,10 +595,22 @@ class MonolithAnalyzer(IAnalyzer):
                 return {"elements": [], "connections": []}
             
             # FIX: Handle both dict and string responses from LLM client
-            if response:
+            # CRITICAL FIX: Check if response is not None and not empty
+            if response is not None:
                 if isinstance(response, dict):
+                    # CRITICAL FIX: Check if dict is not empty
+                    if not response:
+                        logger.warning("[MONOLITH] Response is empty dict")
+                        return {"elements": [], "connections": []}
+                    
                     elements = response.get("elements", [])
                     connections = response.get("connections", [])
+                    # CRITICAL FIX 2: Set source attribute for all elements and connections
+                    for el in elements:
+                        el['source'] = 'monolith'
+                    for conn in connections:
+                        conn['source'] = 'monolith'
+                    
                     logger.info(f"[MONOLITH] Successfully parsed response: {len(elements)} elements, {len(connections)} connections")
                     llm_logger.info(
                         f"MONOLITH_SUCCESS [elements={len(elements)}] [connections={len(connections)}]",
@@ -779,6 +627,13 @@ class MonolithAnalyzer(IAnalyzer):
                         if isinstance(parsed, dict):
                             elements = parsed.get("elements", [])
                             connections = parsed.get("connections", [])
+                            
+                            # CRITICAL FIX 2: Set source attribute for all elements and connections
+                            for el in elements:
+                                el['source'] = 'monolith'
+                            for conn in connections:
+                                conn['source'] = 'monolith'
+                            
                             logger.info(f"[MONOLITH] Successfully parsed JSON string: {len(elements)} elements, {len(connections)} connections")
                             llm_logger.info(
                                 f"MONOLITH_SUCCESS [elements={len(elements)}] [connections={len(connections)}]",
@@ -808,6 +663,13 @@ class MonolithAnalyzer(IAnalyzer):
                             if isinstance(parsed, dict):
                                 elements = parsed.get("elements", [])
                                 connections = parsed.get("connections", [])
+                                
+                                # CRITICAL FIX 2: Set source attribute for all elements and connections
+                                for el in elements:
+                                    el['source'] = 'monolith'
+                                for conn in connections:
+                                    conn['source'] = 'monolith'
+                                
                                 logger.info(f"[MONOLITH] Successfully extracted JSON from markdown: {len(elements)} elements, {len(connections)} connections")
                                 llm_logger.info(
                                     f"MONOLITH_SUCCESS [elements={len(elements)}] [connections={len(connections)}]",
@@ -822,6 +684,13 @@ class MonolithAnalyzer(IAnalyzer):
                         if isinstance(parsed, dict):
                             elements = parsed.get("elements", [])
                             connections = parsed.get("connections", [])
+                            
+                            # CRITICAL FIX 2: Set source attribute for all elements and connections
+                            for el in elements:
+                                el['source'] = 'monolith'
+                            for conn in connections:
+                                conn['source'] = 'monolith'
+                            
                             logger.info(f"[MONOLITH] Successfully parsed direct JSON: {len(elements)} elements, {len(connections)} connections")
                             llm_logger.info(
                                 f"MONOLITH_SUCCESS [elements={len(elements)}] [connections={len(connections)}]",

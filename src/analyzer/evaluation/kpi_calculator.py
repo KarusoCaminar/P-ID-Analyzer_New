@@ -38,26 +38,114 @@ class KPICalculator:
         """
         Calculate comprehensive KPIs.
         
+        CRITICAL: Always calculates internal KPIs (structural + confidence) even without truth data.
+        This provides quality scores based on graph structure, confidence, and completeness.
+        
         Args:
             analysis_data: Analysis result data
             truth_data: Optional ground truth for comparison
             
         Returns:
-            Comprehensive KPI dictionary
+            Comprehensive KPI dictionary with:
+            - Structural KPIs (always available): total_elements, total_connections, graph_density, etc.
+            - Confidence metrics (always available): avg_element_confidence, avg_connection_confidence, etc.
+            - Internal quality score (always available): Based on structure + confidence (0-100)
+            - Quality metrics (if truth data available): element_f1, connection_f1, precision, recall, etc.
         """
         kpis = {}
         
         # Basic structural KPIs (always available)
         kpis.update(self._calculate_structural_kpis(analysis_data))
         
-        # Confidence metrics
+        # Confidence metrics (always available)
         kpis.update(self._calculate_confidence_metrics(analysis_data))
         
-        # Quality metrics (if truth data available)
+        # CRITICAL FIX: Calculate internal quality score (always available, even without truth data)
+        # This is similar to the old evaluate_kpis.py approach - internal KPIs without ground truth
+        internal_quality_score = self._calculate_internal_quality_score(analysis_data, kpis)
+        kpis['quality_score'] = internal_quality_score
+        
+        # Quality metrics (if truth data available) - these override internal quality score
         if truth_data:
-            kpis.update(self._calculate_quality_metrics(analysis_data, truth_data))
+            quality_metrics = self._calculate_quality_metrics(analysis_data, truth_data)
+            kpis.update(quality_metrics)
+            # If truth-based quality_score is available, use it instead of internal score
+            if quality_metrics.get('quality_score', 0.0) > 0.0:
+                kpis['quality_score'] = quality_metrics['quality_score']
+            else:
+                # If truth-based quality_score is 0.0, keep internal score
+                logger.debug(f"Truth-based quality_score is 0.0, using internal quality_score: {internal_quality_score:.2f}")
         
         return kpis
+    
+    def _calculate_internal_quality_score(
+        self,
+        analysis_data: Dict[str, Any],
+        structural_kpis: Dict[str, Any]
+    ) -> float:
+        """
+        Calculate internal quality score based on structure and confidence (without ground truth).
+        
+        This is similar to the old evaluate_kpis.py approach - internal KPIs that work without ground truth.
+        The score is based on:
+        - Element count and confidence
+        - Connection count and confidence
+        - Graph density and structure
+        - Completeness (connected vs. isolated elements)
+        
+        Args:
+            analysis_data: Analysis result data
+            structural_kpis: Structural KPIs dictionary
+            
+        Returns:
+            Internal quality score (0-100)
+        """
+        elements = analysis_data.get('elements', [])
+        connections = analysis_data.get('connections', [])
+        
+        # Base score
+        quality_score = 50.0
+        
+        # Element quality (max 25 points)
+        if elements:
+            avg_element_confidence = structural_kpis.get('avg_element_confidence', 0.5)
+            element_count = len(elements)
+            # Score based on count (more elements = better, up to a point)
+            element_score = min(element_count * 1.5, 25.0)
+            # Score based on confidence
+            confidence_score = avg_element_confidence * 15.0
+            quality_score += element_score + confidence_score
+        
+        # Connection quality (max 25 points)
+        if connections:
+            avg_connection_confidence = structural_kpis.get('avg_connection_confidence', 0.5)
+            connection_count = len(connections)
+            # Score based on count (more connections = better, up to a point)
+            connection_score = min(connection_count * 1.0, 15.0)
+            # Score based on confidence
+            conn_confidence_score = avg_connection_confidence * 10.0
+            quality_score += connection_score + conn_confidence_score
+        
+        # Graph structure quality (max 20 points)
+        graph_density = structural_kpis.get('graph_density', 0.0)
+        connected_elements = structural_kpis.get('connected_elements', 0)
+        isolated_elements = structural_kpis.get('isolated_elements', 0)
+        total_elements = structural_kpis.get('total_elements', 0)
+        
+        # Density score (higher density = better connectivity)
+        density_score = min(graph_density * 50.0, 10.0)
+        quality_score += density_score
+        
+        # Connectivity score (more connected elements = better)
+        if total_elements > 0:
+            connectivity_ratio = connected_elements / total_elements
+            connectivity_score = connectivity_ratio * 10.0
+            quality_score += connectivity_score
+        
+        # Clamp to 0-100
+        quality_score = max(0.0, min(100.0, quality_score))
+        
+        return round(quality_score, 2)
     
     def _calculate_structural_kpis(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Calculate structural KPIs from graph structure."""
@@ -590,9 +678,18 @@ class KPICalculator:
             
             return connections
         
-        truth_connections = extract_connections_from_truth(truth_data.get('connections', []))
+        # CRITICAL FIX: Handle CGM format (connectors) vs. simple format (connections)
+        # Ground truth can have either 'connections' or 'connectors' key
+        truth_connections_list = truth_data.get('connections', [])
+        if not truth_connections_list:
+            # Try CGM format: 'connectors' instead of 'connections'
+            truth_connections_list = truth_data.get('connectors', [])
+            if truth_connections_list:
+                logger.info(f"Ground truth uses CGM format (connectors), converting to connections format")
         
-        logger.info(f"Extracted {len(truth_connections)} connections from ground truth (format: {'converter_ports' if any('from_converter_ports' in c for c in truth_data.get('connections', [])) else 'simple'})")
+        truth_connections = extract_connections_from_truth(truth_connections_list)
+        
+        logger.info(f"Extracted {len(truth_connections)} connections from ground truth (format: {'converter_ports' if any('from_converter_ports' in c for c in truth_connections_list) else 'simple'})")
         
         # CRITICAL FIX: Improve ID mapping with fuzzy matching for connections
         # Create reverse mapping (analysis_id -> truth_id) and fuzzy match function
